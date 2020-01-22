@@ -13,22 +13,22 @@
 
 package com.amazonaws.encryptionsdk;
 
-import static com.amazonaws.encryptionsdk.internal.Utils.assertNonNull;
-
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
-import java.util.List;
 import java.util.Map;
 
+import com.amazonaws.encryptionsdk.exception.AwsCryptoException;
 import com.amazonaws.encryptionsdk.exception.BadCiphertextException;
 import com.amazonaws.encryptionsdk.internal.DecryptionHandler;
 import com.amazonaws.encryptionsdk.internal.EncryptionHandler;
+import com.amazonaws.encryptionsdk.internal.LazyMessageCryptoHandler;
 import com.amazonaws.encryptionsdk.internal.MessageCryptoHandler;
 import com.amazonaws.encryptionsdk.internal.ProcessingSummary;
 import com.amazonaws.encryptionsdk.internal.Utils;
-import com.amazonaws.util.Base64;
+import com.amazonaws.encryptionsdk.model.EncryptionMaterials;
+import com.amazonaws.encryptionsdk.model.EncryptionMaterialsRequest;
 
 /**
  * Provides the primary entry-point to the AWS Encryption SDK. All encryption and decryption
@@ -84,6 +84,7 @@ import com.amazonaws.util.Base64;
  * safety to advanced developers. The great majority of users should be able to just use the
  * provided type parameters or the {@code ?} wildcard.
  */
+@SuppressWarnings("WeakerAccess") // this is a public API
 public class AwsCrypto {
     private static final Map<String, String> EMPTY_MAP = Collections.emptyMap();
 
@@ -103,8 +104,12 @@ public class AwsCrypto {
         return 4096;
     }
 
-    private CryptoAlgorithm encryptionAlgorithm_ = getDefaultCryptoAlgorithm();
-    private int encryptionFrameSize_ = getDefaultFrameSize();
+    // These are volatile because we allow unsynchronized writes via our setters, and without setting volatile we could
+    // see strange results - e.g. copying these to a local might give different values on subsequent reads from the
+    // local. By setting them volatile we ensure that proper memory barriers are applied to ensure things behave in a
+    // sensible manner.
+    private volatile CryptoAlgorithm encryptionAlgorithm_ = null;
+    private volatile int encryptionFrameSize_ = getDefaultFrameSize();
 
     /**
      * Sets the {@link CryptoAlgorithm} to use when <em>encrypting</em> data. This has no impact on
@@ -120,14 +125,18 @@ public class AwsCrypto {
 
     /**
      * Sets the framing size to use when <em>encrypting</em> data. This has no impact on decryption.
-     * {@code frameSize} must be a non-negative multiple of the underlying algorithm's blocksize. If
-     * {@code franeSize} is 0, then framing is disabled and the entire plaintext will be encrypted
+     * If {@code frameSize} is 0, then framing is disabled and the entire plaintext will be encrypted
      * in a single block.
+     *
+     * Note that during encryption arrays of this size will be allocated. Using extremely large frame sizes may pose
+     * compatibility issues when the decryptor is running on 32-bit systems. Additionally, Java VM limits may set a
+     * platform-specific upper bound to frame sizes.
      */
     public void setEncryptionFrameSize(final int frameSize) {
-        if (frameSize < 0 || (frameSize % encryptionAlgorithm_.getBlockSize()) != 0) {
-            throw new IllegalArgumentException("frameSize must be a non-negative multiple of the block size");
+        if (frameSize < 0) {
+            throw new IllegalArgumentException("frameSize must be non-negative");
         }
+
         encryptionFrameSize_ = frameSize;
     }
 
@@ -138,20 +147,40 @@ public class AwsCrypto {
     /**
      * Returns the best estimate for the output length of encrypting a plaintext with the provided
      * {@code plaintextSize} and {@code encryptionContext}. The actual ciphertext may be shorter.
+     *
+     * This method is equivalent to calling {@link #estimateCiphertextSize(CryptoMaterialsManager, int, Map)} with a
+     * {@link DefaultCryptoMaterialsManager} based on the given provider.
      */
-    public <K extends MasterKey<K>> long estimateCiphertextSize(final MasterKeyProvider<K> provider,
-            final int plaintextSize, final Map<String, String> encryptionContext) {
-        final MasterKeyRequest keyRequest = MasterKeyRequest.newBuilder()
-                .setEncryptionContext(encryptionContext)
-                .setStreaming(true) // Since we don't have the actual data yet
-                .build();
-        final List<K> mks = assertNonNull(provider, "provider").getMasterKeysForEncryption(keyRequest);
+    public <K extends MasterKey<K>> long estimateCiphertextSize(
+            final MasterKeyProvider<K> provider,
+            final int plaintextSize,
+            final Map<String, String> encryptionContext
+    ) {
+        return estimateCiphertextSize(new DefaultCryptoMaterialsManager(provider), plaintextSize, encryptionContext);
+    }
 
-        final MessageCryptoHandler<K> cryptoHandler = new EncryptionHandler<>(
-                mks,
-                encryptionContext,
-                getEncryptionAlgorithm(),
-                getEncryptionFrameSize());
+    /**
+     * Returns the best estimate for the output length of encrypting a plaintext with the provided
+     * {@code plaintextSize} and {@code encryptionContext}. The actual ciphertext may be shorter.
+     */
+    public long estimateCiphertextSize(
+            CryptoMaterialsManager materialsManager,
+            final int plaintextSize,
+            final Map<String, String> encryptionContext
+    ) {
+        EncryptionMaterialsRequest request = EncryptionMaterialsRequest.newBuilder()
+                                                                       .setContext(encryptionContext)
+                                                                       .setRequestedAlgorithm(getEncryptionAlgorithm())
+        // We're not actually encrypting any data, so don't consume any bytes from the cache's limits. We do need to
+        // pass /something/ though, or the cache will be bypassed (as it'll assume this is a streaming encrypt of
+        // unknown size).
+                                                                       .setPlaintextSize(0)
+                                                                       .build();
+
+        final MessageCryptoHandler cryptoHandler = new EncryptionHandler(
+                getEncryptionFrameSize(),
+                checkAlgorithm(materialsManager.getMaterialsForEncrypt(request))
+        );
 
         return cryptoHandler.estimateOutputSize(plaintextSize);
     }
@@ -161,35 +190,72 @@ public class AwsCrypto {
      * {@link #estimateCiphertextSize(MasterKeyProvider, int, Map)} with an empty
      * {@code encryptionContext}.
      */
-    public <K extends MasterKey<K>> long estimateCiphertextSize(final MasterKeyProvider<K> provider,
-            final int plaintextSize) {
+    public <K extends MasterKey<K>> long estimateCiphertextSize(
+            final MasterKeyProvider<K> provider,
+            final int plaintextSize
+    ) {
         return estimateCiphertextSize(provider, plaintextSize, EMPTY_MAP);
+    }
+
+    /**
+     * Returns the equivalent to calling
+     * {@link #estimateCiphertextSize(CryptoMaterialsManager, int, Map)} with an empty
+     * {@code encryptionContext}.
+     */
+    public long estimateCiphertextSize(
+            final CryptoMaterialsManager materialsManager,
+            final int plaintextSize
+    ) {
+        return estimateCiphertextSize(materialsManager, plaintextSize, EMPTY_MAP);
     }
 
     /**
      * Returns an encrypted form of {@code plaintext} that has been protected with {@link DataKey
      * DataKeys} that are in turn protected by {@link MasterKey MasterKeys} provided by
-     * {@code provider}. This method may add new values to the provided {@code encryptionContext}.
+     * {@code provider}.
+     *
+     * This method is equivalent to calling {@link #encryptData(CryptoMaterialsManager, byte[], Map)} using a
+     * {@link DefaultCryptoMaterialsManager} based on the given provider.
      */
-    public <K extends MasterKey<K>> CryptoResult<byte[], K> encryptData(final MasterKeyProvider<K> provider,
-            final byte[] plaintext, final Map<String, String> encryptionContext) {
-        final MasterKeyRequest keyRequest = MasterKeyRequest.newBuilder()
-                .setEncryptionContext(encryptionContext)
-                .setPlaintext(plaintext)
-                .build();
-        final List<K> mks = assertNonNull(provider, "provider").getMasterKeysForEncryption(keyRequest);
-        final MessageCryptoHandler<K> cryptoHandler = new EncryptionHandler<>(
-                mks,
-                encryptionContext,
-                getEncryptionAlgorithm(),
-                getEncryptionFrameSize());
+    public <K extends MasterKey<K>> CryptoResult<byte[], K> encryptData(
+            final MasterKeyProvider<K> provider,
+            final byte[] plaintext,
+            final Map<String, String> encryptionContext
+    ) {
+        //noinspection unchecked
+        return (CryptoResult<byte[], K>)
+                encryptData(new DefaultCryptoMaterialsManager(provider), plaintext, encryptionContext);
+    }
+
+    /**
+     * Returns an encrypted form of {@code plaintext} that has been protected with {@link DataKey
+     * DataKeys} that are in turn protected by the given CryptoMaterialsProvider.
+     */
+    public CryptoResult<byte[], ?> encryptData(
+            CryptoMaterialsManager materialsManager,
+            final byte[] plaintext,
+            final Map<String, String> encryptionContext
+    ) {
+        EncryptionMaterialsRequest request = EncryptionMaterialsRequest.newBuilder()
+                                                                       .setContext(encryptionContext)
+                                                                       .setRequestedAlgorithm(getEncryptionAlgorithm())
+                                                                       .setPlaintext(plaintext)
+                                                                       .build();
+
+        final MessageCryptoHandler cryptoHandler = new EncryptionHandler(
+                getEncryptionFrameSize(),
+                checkAlgorithm(materialsManager.getMaterialsForEncrypt(request))
+        );
+
         final int outSizeEstimate = cryptoHandler.estimateOutputSize(plaintext.length);
         final byte[] out = new byte[outSizeEstimate];
         int outLen = cryptoHandler.processBytes(plaintext, 0, plaintext.length, out, 0).getBytesWritten();
         outLen += cryptoHandler.doFinal(out, outLen);
 
         final byte[] outBytes = Utils.truncate(out, outLen);
-        return new CryptoResult<byte[], K>(outBytes, cryptoHandler.getMasterKeys(), cryptoHandler.getHeaders());
+
+        //noinspection unchecked
+        return new CryptoResult(outBytes, cryptoHandler.getMasterKeys(), cryptoHandler.getHeaders());
     }
 
     /**
@@ -202,30 +268,95 @@ public class AwsCrypto {
     }
 
     /**
+     * Returns the equivalent to calling {@link #encryptData(CryptoMaterialsManager, byte[], Map)} with
+     * an empty {@code encryptionContext}.
+     */
+    public CryptoResult<byte[], ?> encryptData(
+            final CryptoMaterialsManager materialsManager,
+            final byte[] plaintext
+    ) {
+        return encryptData(materialsManager, plaintext, EMPTY_MAP);
+    }
+
+    /**
      * Calls {@link #encryptData(MasterKeyProvider, byte[], Map)} on the UTF-8 encoded bytes of
      * {@code plaintext} and base64 encodes the result.
+     * @deprecated Use the {@link #encryptData(MasterKeyProvider, byte[], Map)} and
+     * {@link #decryptData(MasterKeyProvider, byte[])} APIs instead. {@code encryptString} and {@code decryptString}
+     * work as expected if you use them together. However, to work with other language implementations of the AWS 
+     * Encryption SDK, you need to base64-decode the output of {@code encryptString} and base64-encode the input to
+     * {@code decryptString}. These deprecated APIs will be removed in the future.
      */
-    public <K extends MasterKey<K>> CryptoResult<String, K> encryptString(final MasterKeyProvider<K> provider,
+    @Deprecated
+    public <K extends MasterKey<K>> CryptoResult<String, K> encryptString(
+            final MasterKeyProvider<K> provider,
             final String plaintext,
-            final Map<String, String> encryptionContext) {
-        final CryptoResult<byte[], K> ctBytes = encryptData(
-                provider, plaintext.getBytes(StandardCharsets.UTF_8), encryptionContext);
-        return new CryptoResult<String, K>(Base64.encodeAsString(ctBytes.getResult()),
-                ctBytes.getMasterKeys(), ctBytes.getHeaders());
+            final Map<String, String> encryptionContext
+    ) {
+        //noinspection unchecked
+        return (CryptoResult<String, K>)
+                encryptString(new DefaultCryptoMaterialsManager(provider), plaintext, encryptionContext);
+    }
+
+    /**
+     * Calls {@link #encryptData(CryptoMaterialsManager, byte[], Map)} on the UTF-8 encoded bytes of
+     * {@code plaintext} and base64 encodes the result.
+     * @deprecated Use the {@link #encryptData(CryptoMaterialsManager, byte[], Map)} and
+     * {@link #decryptData(CryptoMaterialsManager, byte[])} APIs instead. {@code encryptString} and {@code decryptString}
+     * work as expected if you use them together. However, to work with other language implementations of the AWS 
+     * Encryption SDK, you need to base64-decode the output of {@code encryptString} and base64-encode the input to
+     * {@code decryptString}. These deprecated APIs will be removed in the future.
+     */
+    @Deprecated
+    public CryptoResult<String, ?> encryptString(
+            CryptoMaterialsManager materialsManager,
+            final String plaintext,
+            final Map<String, String> encryptionContext
+    ) {
+        final CryptoResult<byte[], ?> ctBytes = encryptData(
+                materialsManager,
+                plaintext.getBytes(StandardCharsets.UTF_8),
+                encryptionContext
+        );
+        return new CryptoResult<>(Utils.encodeBase64String(ctBytes.getResult()),
+                                  ctBytes.getMasterKeys(), ctBytes.getHeaders());
     }
 
     /**
      * Returns the equivalent to calling {@link #encryptString(MasterKeyProvider, String, Map)} with
      * an empty {@code encryptionContext}.
+     * @deprecated Use the {@link #encryptData(MasterKeyProvider, byte[])} and
+     * {@link #decryptData(MasterKeyProvider, byte[])} APIs instead. {@code encryptString} and {@code decryptString}
+     * work as expected if you use them together. However, to work with other language implementations of the AWS 
+     * Encryption SDK, you need to base64-decode the output of {@code encryptString} and base64-encode the input to
+     * {@code decryptString}. These deprecated APIs will be removed in the future.
      */
+    @Deprecated
     public <K extends MasterKey<K>> CryptoResult<String, K> encryptString(final MasterKeyProvider<K> provider,
             final String plaintext) {
         return encryptString(provider, plaintext, EMPTY_MAP);
     }
 
     /**
-     * Decrypts the provided {@code ciphertext} by requesting that the {@code provider} unwrap the
-     * first usable {@link DataKey} in the ciphertext and then decrypts the ciphertext using that
+     * Returns the equivalent to calling {@link #encryptString(CryptoMaterialsManager, String, Map)} with
+     * an empty {@code encryptionContext}.
+     * @deprecated Use the {@link #encryptData(CryptoMaterialsManager, byte[])} and
+     * {@link #decryptData(CryptoMaterialsManager, byte[])} APIs instead. {@code encryptString} and {@code decryptString}
+     * work as expected if you use them together. However, to work with other language implementations of the AWS 
+     * Encryption SDK, you need to base64-decode the output of {@code encryptString} and base64-encode the input to
+     * {@code decryptString}. These deprecated APIs will be removed in the future.
+     */
+    @Deprecated
+    public CryptoResult<String, ?> encryptString(
+            final CryptoMaterialsManager materialsManager,
+            final String plaintext
+    ) {
+        return encryptString(materialsManager, plaintext, EMPTY_MAP);
+    }
+
+    /**
+     * Decrypts the provided {@code ciphertext} by requesting that the {@code provider} unwrap any
+     * usable {@link DataKey} in the ciphertext and then decrypts the ciphertext using that
      * {@code DataKey}.
      */
     public <K extends MasterKey<K>> CryptoResult<byte[], K> decryptData(final MasterKeyProvider<K> provider,
@@ -235,19 +366,49 @@ public class AwsCrypto {
     }
 
     /**
+     * Decrypts the provided ciphertext by delegating to the provided materialsManager to obtain the decrypted
+     * {@link DataKey}.
+     *
+     * @param materialsManager the {@link CryptoMaterialsManager} to use for decryption operations.
+     * @param ciphertext the ciphertext to attempt to decrypt.
+     * @return the {@link CryptoResult} with the decrypted data.
+     */
+    public CryptoResult<byte[], ?> decryptData(
+            final CryptoMaterialsManager materialsManager,
+            final byte[] ciphertext
+    ) {
+        return decryptData(Utils.assertNonNull(materialsManager, "materialsManager"),
+                           new ParsedCiphertext(ciphertext));
+    }
+
+    /**
      * @see #decryptData(MasterKeyProvider, byte[])
      */
+    @SuppressWarnings("unchecked")
     public <K extends MasterKey<K>> CryptoResult<byte[], K> decryptData(
             final MasterKeyProvider<K> provider, final ParsedCiphertext ciphertext) {
-        final MessageCryptoHandler<K> cryptoHandler = new DecryptionHandler<>(provider, ciphertext);
+        Utils.assertNonNull(provider, "provider");
+        return (CryptoResult<byte[], K>) decryptData(new DefaultCryptoMaterialsManager(provider), ciphertext);
+    }
+
+    /**
+     * @see #decryptData(CryptoMaterialsManager, byte[])
+     */
+    public CryptoResult<byte[], ?> decryptData(
+            final CryptoMaterialsManager materialsManager,
+            final ParsedCiphertext ciphertext
+    ) {
+        Utils.assertNonNull(materialsManager, "materialsManager");
+
+        final MessageCryptoHandler cryptoHandler = DecryptionHandler.create(materialsManager, ciphertext);
 
         final byte[] ciphertextBytes = ciphertext.getCiphertext();
         final int contentLen = ciphertextBytes.length - ciphertext.getOffset();
         final int outSizeEstimate = cryptoHandler.estimateOutputSize(contentLen);
         final byte[] out = new byte[outSizeEstimate];
         final ProcessingSummary processed = cryptoHandler.processBytes(ciphertextBytes, ciphertext.getOffset(),
-                contentLen, out,
-                0);
+                                                                       contentLen, out,
+                                                                       0);
         if (processed.getBytesProcessed() != contentLen) {
             throw new BadCiphertextException("Unable to process entire ciphertext. May have trailing data.");
         }
@@ -255,7 +416,9 @@ public class AwsCrypto {
         outLen += cryptoHandler.doFinal(out, outLen);
 
         final byte[] outBytes = Utils.truncate(out, outLen);
-        return new CryptoResult<byte[], K>(outBytes, cryptoHandler.getMasterKeys(), cryptoHandler.getHeaders());
+
+        //noinspection unchecked
+        return new CryptoResult(outBytes, cryptoHandler.getMasterKeys(), cryptoHandler.getHeaders());
     }
 
     /**
@@ -263,20 +426,64 @@ public class AwsCrypto {
      * UTF-8 encoded string.
      *
      * @see #decryptData(MasterKeyProvider, byte[])
+     * @deprecated Use the {@link #decryptData(MasterKeyProvider, byte[])} and
+     * {@link #encryptData(MasterKeyProvider, byte[], Map)} APIs instead. {@code encryptString} and {@code decryptString}
+     * work as expected if you use them together. However, to work with other language implementations of the AWS 
+     * Encryption SDK, you need to base64-decode the output of {@code encryptString} and base64-encode the input to
+     * {@code decryptString}. These deprecated APIs will be removed in the future.
      */
-    public <K extends MasterKey<K>> CryptoResult<String, K> decryptString(final MasterKeyProvider<K> provider,
-            final String ciphertext) {
+    @Deprecated
+    @SuppressWarnings("unchecked")
+    public <K extends MasterKey<K>> CryptoResult<String, K> decryptString(
+            final MasterKeyProvider<K> provider,
+            final String ciphertext
+    ) {
+        return (CryptoResult<String, K>) decryptString(new DefaultCryptoMaterialsManager(provider), ciphertext);
+    }
+
+    /**
+     * Base64 decodes the {@code ciphertext} prior to decryption and then treats the results as a
+     * UTF-8 encoded string.
+     *
+     * @see #decryptData(CryptoMaterialsManager, byte[])
+     * @deprecated Use the {@link #decryptData(CryptoMaterialsManager, byte[])} and
+     * {@link #encryptData(CryptoMaterialsManager, byte[], Map)} APIs instead. {@code encryptString}  and {@code decryptString}
+     * work as expected if you use them together. However, to work with other language implementations of the AWS 
+     * Encryption SDK, you need to base64-decode the output of {@code encryptString} and base64-encode the input to
+     * {@code decryptString}. These deprecated APIs will be removed in the future.
+     */
+    @Deprecated
+    public CryptoResult<String, ?> decryptString(final CryptoMaterialsManager provider,
+                                                                          final String ciphertext) {
         Utils.assertNonNull(provider, "provider");
         final byte[] ciphertextBytes;
         try {
-            ciphertextBytes = Base64.decode(Utils.assertNonNull(ciphertext, "ciphertext"));
+            ciphertextBytes = Utils.decodeBase64String(Utils.assertNonNull(ciphertext, "ciphertext"));
         } catch (final IllegalArgumentException ex) {
             throw new BadCiphertextException("Invalid base 64", ex);
         }
-        final CryptoResult<byte[], K> ptBytes = decryptData(provider, ciphertextBytes);
-        return new CryptoResult<String, K>(
+        final CryptoResult<byte[], ?> ptBytes = decryptData(provider, ciphertextBytes);
+        //noinspection unchecked
+        return new CryptoResult(
                 new String(ptBytes.getResult(), StandardCharsets.UTF_8),
                 ptBytes.getMasterKeys(), ptBytes.getHeaders());
+    }
+
+    /**
+     * Returns a {@link CryptoOutputStream} which encrypts the data prior to passing it onto the
+     * underlying {@link OutputStream}.
+     *
+     * @see #encryptData(MasterKeyProvider, byte[], Map)
+     * @see javax.crypto.CipherOutputStream
+     */
+    public <K extends MasterKey<K>> CryptoOutputStream<K> createEncryptingStream(
+            final MasterKeyProvider<K> provider,
+            final OutputStream os,
+            final Map<String, String> encryptionContext
+    ) {
+        //noinspection unchecked
+        return (CryptoOutputStream<K>)
+                createEncryptingStream(new DefaultCryptoMaterialsManager(provider), os, encryptionContext);
     }
 
     /**
@@ -286,22 +493,12 @@ public class AwsCrypto {
      * @see #encryptData(MasterKeyProvider, byte[], Map)
      * @see javax.crypto.CipherOutputStream
      */
-    public <K extends MasterKey<K>> CryptoOutputStream<K> createEncryptingStream(
-            final MasterKeyProvider<K> provider,
+    public CryptoOutputStream<?> createEncryptingStream(
+            final CryptoMaterialsManager materialsManager,
             final OutputStream os,
-            final Map<String, String> encryptionContext) {
-        final MasterKeyRequest keyRequest = MasterKeyRequest.newBuilder()
-                .setEncryptionContext(encryptionContext)
-                .setStreaming(true)
-                .build();
-        final List<K> mks = assertNonNull(provider, "provider").getMasterKeysForEncryption(keyRequest);
-
-        final MessageCryptoHandler<K> cryptoHandler = new EncryptionHandler<>(
-                mks,
-                encryptionContext,
-                getEncryptionAlgorithm(),
-                getEncryptionFrameSize());
-        return new CryptoOutputStream<K>(os, cryptoHandler);
+            final Map<String, String> encryptionContext
+    ) {
+        return new CryptoOutputStream<>(os, getEncryptingStreamHandler(materialsManager, encryptionContext));
     }
 
     /**
@@ -316,6 +513,18 @@ public class AwsCrypto {
     }
 
     /**
+     * Returns the equivalent to calling
+     * {@link #createEncryptingStream(CryptoMaterialsManager, OutputStream, Map)} with an empty
+     * {@code encryptionContext}.
+     */
+    public CryptoOutputStream<?> createEncryptingStream(
+            final CryptoMaterialsManager materialsManager,
+            final OutputStream os
+    ) {
+        return createEncryptingStream(materialsManager, os, EMPTY_MAP);
+    }
+
+    /**
      * Returns a {@link CryptoInputStream} which encrypts the data after reading it from the
      * underlying {@link InputStream}.
      *
@@ -325,19 +534,28 @@ public class AwsCrypto {
     public <K extends MasterKey<K>> CryptoInputStream<K> createEncryptingStream(
             final MasterKeyProvider<K> provider,
             final InputStream is,
-            final Map<String, String> encryptionContext) {
-        final MasterKeyRequest keyRequest = MasterKeyRequest.newBuilder()
-                .setEncryptionContext(encryptionContext)
-                .setStreaming(true)
-                .build();
-        final List<K> mks = assertNonNull(provider, "provider").getMasterKeysForEncryption(keyRequest);
+            final Map<String, String> encryptionContext
+    ) {
+        //noinspection unchecked
+        return (CryptoInputStream<K>)
+                createEncryptingStream(new DefaultCryptoMaterialsManager(provider), is, encryptionContext);
+    }
 
-        final MessageCryptoHandler<K> cryptoHandler = new EncryptionHandler<>(
-                mks,
-                encryptionContext,
-                getEncryptionAlgorithm(),
-                getEncryptionFrameSize());
-        return new CryptoInputStream<K>(is, cryptoHandler);
+    /**
+     * Returns a {@link CryptoInputStream} which encrypts the data after reading it from the
+     * underlying {@link InputStream}.
+     *
+     * @see #encryptData(MasterKeyProvider, byte[], Map)
+     * @see javax.crypto.CipherInputStream
+     */
+    public CryptoInputStream<?> createEncryptingStream(
+            CryptoMaterialsManager materialsManager,
+            final InputStream is,
+            final Map<String, String> encryptionContext
+    ) {
+        final MessageCryptoHandler cryptoHandler = getEncryptingStreamHandler(materialsManager, encryptionContext);
+
+        return new CryptoInputStream<>(is, cryptoHandler);
     }
 
     /**
@@ -347,20 +565,33 @@ public class AwsCrypto {
      */
     public <K extends MasterKey<K>> CryptoInputStream<K> createEncryptingStream(
             final MasterKeyProvider<K> provider,
-            final InputStream is) {
+            final InputStream is
+    ) {
         return createEncryptingStream(provider, is, EMPTY_MAP);
+    }
+
+    /**
+     * Returns the equivalent to calling
+     * {@link #createEncryptingStream(CryptoMaterialsManager, InputStream, Map)} with an empty
+     * {@code encryptionContext}.
+     */
+    public CryptoInputStream<?> createEncryptingStream(
+            final CryptoMaterialsManager materialsManager,
+            final InputStream is
+    ) {
+        return createEncryptingStream(materialsManager, is, EMPTY_MAP);
     }
 
     /**
      * Returns a {@link CryptoOutputStream} which decrypts the data prior to passing it onto the
      * underlying {@link OutputStream}.
-     * 
-     * @see #encryptData(MasterKeyProvider, byte[], Map)
+     *
+     * @see #decryptData(MasterKeyProvider, byte[])
      * @see javax.crypto.CipherOutputStream
      */
     public <K extends MasterKey<K>> CryptoOutputStream<K> createDecryptingStream(
             final MasterKeyProvider<K> provider, final OutputStream os) {
-        final MessageCryptoHandler<K> cryptoHandler = new DecryptionHandler<>(provider);
+        final MessageCryptoHandler cryptoHandler = DecryptionHandler.create(provider);
         return new CryptoOutputStream<K>(os, cryptoHandler);
     }
 
@@ -368,12 +599,74 @@ public class AwsCrypto {
      * Returns a {@link CryptoInputStream} which decrypts the data after reading it from the
      * underlying {@link InputStream}.
      *
-     * @see #encryptData(MasterKeyProvider, byte[], Map)
+     * @see #decryptData(MasterKeyProvider, byte[])
      * @see javax.crypto.CipherInputStream
      */
     public <K extends MasterKey<K>> CryptoInputStream<K> createDecryptingStream(
             final MasterKeyProvider<K> provider, final InputStream is) {
-        final MessageCryptoHandler<K> cryptoHandler = new DecryptionHandler<>(provider);
+        final MessageCryptoHandler cryptoHandler = DecryptionHandler.create(provider);
         return new CryptoInputStream<K>(is, cryptoHandler);
+    }
+
+    /**
+     * Returns a {@link CryptoOutputStream} which decrypts the data prior to passing it onto the
+     * underlying {@link OutputStream}.
+     *
+     * @see #decryptData(CryptoMaterialsManager, byte[])
+     * @see javax.crypto.CipherOutputStream
+     */
+    public CryptoOutputStream<?> createDecryptingStream(
+            final CryptoMaterialsManager materialsManager, final OutputStream os
+    ) {
+        final MessageCryptoHandler cryptoHandler = DecryptionHandler.create(materialsManager);
+        return new CryptoOutputStream(os, cryptoHandler);
+    }
+
+    /**
+     * Returns a {@link CryptoInputStream} which decrypts the data after reading it from the
+     * underlying {@link InputStream}.
+     *
+     * @see #encryptData(CryptoMaterialsManager, byte[], Map)
+     * @see javax.crypto.CipherInputStream
+     */
+    public CryptoInputStream<?> createDecryptingStream(
+            final CryptoMaterialsManager materialsManager, final InputStream is
+    ) {
+        final MessageCryptoHandler cryptoHandler = DecryptionHandler.create(materialsManager);
+        return new CryptoInputStream(is, cryptoHandler);
+    }
+
+    private MessageCryptoHandler getEncryptingStreamHandler(
+            CryptoMaterialsManager materialsManager, Map<String, String> encryptionContext
+    ) {
+        Utils.assertNonNull(materialsManager, "materialsManager");
+        Utils.assertNonNull(encryptionContext, "encryptionContext");
+
+        EncryptionMaterialsRequest.Builder requestBuilder = EncryptionMaterialsRequest.newBuilder()
+                                                                                      .setContext(encryptionContext)
+                                                                                      .setRequestedAlgorithm(getEncryptionAlgorithm());
+
+        return new LazyMessageCryptoHandler(info -> {
+            // Hopefully we know the input size now, so we can pass it along to the CMM.
+            if (info.getMaxInputSize() != -1) {
+                requestBuilder.setPlaintextSize(info.getMaxInputSize());
+            }
+
+            return new EncryptionHandler(
+                    getEncryptionFrameSize(),
+                    checkAlgorithm(materialsManager.getMaterialsForEncrypt(requestBuilder.build()))
+            );
+        });
+    }
+
+    private EncryptionMaterials checkAlgorithm(EncryptionMaterials result) {
+        if (encryptionAlgorithm_ != null && result.getAlgorithm() != encryptionAlgorithm_) {
+            throw new AwsCryptoException(
+                    String.format("Materials manager ignored requested algorithm; algorithm %s was set on AwsCrypto " +
+                                          "but %s was selected", encryptionAlgorithm_, result.getAlgorithm())
+            );
+        }
+
+        return result;
     }
 }

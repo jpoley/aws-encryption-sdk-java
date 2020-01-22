@@ -52,8 +52,9 @@ public interface CryptoHandler {
     int doFinal(final byte[] out, final int outOff);
 
     /**
-     * Return the size of the output buffer required for a processBytes plus a doFinal with an input
-     * of inLen bytes.
+     * Return the size of the output buffer required for a
+     * {@link #processBytes(byte[], int, int, byte[], int)} plus a {@link #doFinal(byte[], int)}
+     * call with an input of {@code inLen} bytes.
      * 
      * <p>
      * Note this method is allowed to return an estimation of the output size that is <i>greater</i>
@@ -62,14 +63,43 @@ public interface CryptoHandler {
      * 
      * @param inLen
      *            the length of the input.
-     * @return the space required to accommodate a call to processBytes and doFinal with an input of
-     *         size {@code inLen} bytes.
+     * @return the space required to accommodate a call to processBytes and
+     *            {@link #doFinal(byte[], int)} with an input of size {@code inLen} bytes.
      */
     int estimateOutputSize(final int inLen);
 
     /**
+     * Return the size of the output buffer required for a call to
+     * {@link #processBytes(byte[], int, int, byte[], int)}.
+     * 
+     * <p>
+     * Note this method is allowed to return an estimation of the output size that is <i>greater</i>
+     * than the actual size of the output. Returning an estimate that is lesser than the actual size
+     * of the output will result in underflow exceptions.
+     * 
+     * @param inLen
+     *            the length of the input.
+     * @return the space required to accommodate a call to 
+     *            {@link #processBytes(byte[], int, int, byte[], int)} with an input of size
+     *            {@code inLen} bytes.
+     */
+    int estimatePartialOutputSize(final int inLen);
+
+    /**
+     * Return the size of the output buffer required for a call to {@link #doFinal(byte[], int)}.
+     * 
+     * <p>
+     * Note this method is allowed to return an estimation of the output size that is <i>greater</i>
+     * than the actual size of the output. Returning an estimate that is lesser than the actual size
+     * of the output will result in underflow exceptions.
+     * 
+     * @return the space required to accomodate a call to {@link #doFinal(byte[], int)}
+     */
+    int estimateFinalOutputSize();
+
+    /**
      * For decrypt and parsing flows returns {@code true} when this has handled as many bytes as it
-     * can. This usually means that it has reached the end of an object, file, or other deliminited
+     * can. This usually means that it has reached the end of an object, file, or other delimited
      * stream.
      */
     boolean isComplete();

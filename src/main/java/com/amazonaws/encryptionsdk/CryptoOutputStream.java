@@ -15,7 +15,9 @@ package com.amazonaws.encryptionsdk;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.List;
 
+import com.amazonaws.encryptionsdk.caching.CachingCryptoMaterialsManager;
 import com.amazonaws.encryptionsdk.exception.BadCiphertextException;
 import com.amazonaws.encryptionsdk.internal.MessageCryptoHandler;
 import com.amazonaws.encryptionsdk.internal.Utils;
@@ -50,10 +52,8 @@ import com.amazonaws.encryptionsdk.internal.Utils;
  */
 public class CryptoOutputStream<K extends MasterKey<K>> extends OutputStream {
     private final OutputStream outputStream_;
-    private int lastProcessedLen_ = 0;
 
-    private byte[] outBytes_ = new byte[0];
-    private final MessageCryptoHandler<K> cryptoHandler_;
+    private final MessageCryptoHandler cryptoHandler_;
 
     /**
      * Constructs a CryptoOutputStream that wraps the provided OutputStream object. It performs
@@ -67,7 +67,7 @@ public class CryptoOutputStream<K extends MasterKey<K>> extends OutputStream {
      *            the cryptoHandler implementation that provides the methods to use in performing
      *            cryptographic transformation of the bytes written to this stream.
      */
-    CryptoOutputStream(final OutputStream outputStream, final MessageCryptoHandler<K> cryptoHandler) {
+    CryptoOutputStream(final OutputStream outputStream, final MessageCryptoHandler cryptoHandler) {
         outputStream_ = Utils.assertNonNull(outputStream, "outputStream");
         cryptoHandler_ = Utils.assertNonNull(cryptoHandler, "cryptoHandler");
     }
@@ -105,12 +105,12 @@ public class CryptoOutputStream<K extends MasterKey<K>> extends OutputStream {
             throw new IllegalArgumentException(String.format("Invalid values for offset: %d and length: %d", off, len));
         }
 
-        final int outLen = cryptoHandler_.estimateOutputSize(len);
-        outBytes_ = new byte[outLen];
+        final int outLen = cryptoHandler_.estimatePartialOutputSize(len);
+        final byte[] outBytes = new byte[outLen];
 
-        lastProcessedLen_ = cryptoHandler_.processBytes(b, off, len, outBytes_, 0).getBytesWritten();
-        if (lastProcessedLen_ > 0) {
-            outputStream_.write(outBytes_, 0, lastProcessedLen_);
+        int bytesWritten = cryptoHandler_.processBytes(b, off, len, outBytes, 0).getBytesWritten();
+        if (bytesWritten > 0) {
+            outputStream_.write(outBytes, 0, bytesWritten);
         }
     }
 
@@ -145,23 +145,40 @@ public class CryptoOutputStream<K extends MasterKey<K>> extends OutputStream {
      */
     @Override
     public void close() throws IOException, BadCiphertextException {
-        if (outBytes_.length == 0) {
-            outBytes_ = new byte[cryptoHandler_.estimateOutputSize(0)];
-            lastProcessedLen_ = 0;
-        }
-        int finalLen = cryptoHandler_.doFinal(outBytes_, lastProcessedLen_);
+        final byte[] outBytes = new byte[cryptoHandler_.estimateFinalOutputSize()];
+        int finalLen = cryptoHandler_.doFinal(outBytes, 0);
 
-        outputStream_.write(outBytes_, lastProcessedLen_, finalLen);
+        outputStream_.write(outBytes, 0, finalLen);
         outputStream_.close();
+    }
+
+    /**
+     * Sets an upper bound on the size of the input data. This method should be called before writing any data to the
+     * stream. If this method is not called prior to writing data, performance may be reduced (notably, it will not
+     * be possible to cache data keys when encrypting).
+     *
+     * Among other things, this size is used to enforce limits configured on the {@link CachingCryptoMaterialsManager}.
+     *
+     * If the size set here is exceeded, an exception will be thrown, and the encyption or decryption will fail.
+     *
+     * @param size Maximum input size.
+     */
+    public void setMaxInputLength(long size) {
+        cryptoHandler_.setMaxInputLength(size);
     }
 
     /**
      * Returns the result of the cryptographic operations including associate metadata.
      */
     public CryptoResult<CryptoOutputStream<K>, K> getCryptoResult() {
-        return new CryptoResult<CryptoOutputStream<K>, K>(
+        if (!cryptoHandler_.getHeaders().isComplete()) {
+            throw new IllegalStateException("Ciphertext headers not yet written to stream");
+        }
+
+        //noinspection unchecked
+        return new CryptoResult<>(
                 this,
-                cryptoHandler_.getMasterKeys(),
+                (List<K>) cryptoHandler_.getMasterKeys(),
                 cryptoHandler_.getHeaders());
     }
 }

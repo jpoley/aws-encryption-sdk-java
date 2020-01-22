@@ -17,7 +17,9 @@ import static com.amazonaws.encryptionsdk.internal.Utils.assertNonNull;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.List;
 
+import com.amazonaws.encryptionsdk.caching.CachingCryptoMaterialsManager;
 import com.amazonaws.encryptionsdk.exception.BadCiphertextException;
 import com.amazonaws.encryptionsdk.internal.MessageCryptoHandler;
 import com.amazonaws.encryptionsdk.internal.Utils;
@@ -57,7 +59,7 @@ public class CryptoInputStream<K extends MasterKey<K>> extends InputStream {
     private int outStart_;
     private int outEnd_;
     private final InputStream inputStream_;
-    private final MessageCryptoHandler<K> cryptoHandler_;
+    private final MessageCryptoHandler cryptoHandler_;
     private boolean hasFinalCalled_;
     private boolean hasProcessBytesCalled_;
 
@@ -72,7 +74,7 @@ public class CryptoInputStream<K extends MasterKey<K>> extends InputStream {
      *            the cryptoHandler implementation that provides the methods to use in performing
      *            cryptographic transformation of the bytes read from the inputStream.
      */
-    CryptoInputStream(final InputStream inputStream, final MessageCryptoHandler<K> cryptoHandler) {
+    CryptoInputStream(final InputStream inputStream, final MessageCryptoHandler cryptoHandler) {
         inputStream_ = Utils.assertNonNull(inputStream, "inputStream");
         cryptoHandler_ = Utils.assertNonNull(cryptoHandler, "cryptoHandler");
     }
@@ -88,10 +90,7 @@ public class CryptoInputStream<K extends MasterKey<K>> extends InputStream {
 
         final int readLen = inputStream_.read(inputStreamBytes);
 
-        final int outSize = cryptoHandler_.estimateOutputSize(readLen);
-
         outStart_ = 0;
-        outBytes_ = new byte[outSize];
 
         int processedLen;
         if (readLen < 0) {
@@ -108,9 +107,12 @@ public class CryptoInputStream<K extends MasterKey<K>> extends InputStream {
                 // processBytes() must be called so the header bytes are written
                 // during encryption.
                 if (!hasProcessBytesCalled_) {
+                    outBytes_ = new byte[cryptoHandler_.estimateOutputSize(0)];
                     outLen += cryptoHandler_.processBytes(inputStreamBytes, 0, 0, outBytes_, outOffset)
                             .getBytesWritten();
                     outOffset += outLen;
+                } else {
+                    outBytes_ = new byte[cryptoHandler_.estimateFinalOutputSize()];
                 }
 
                 // Get final bytes.
@@ -120,6 +122,7 @@ public class CryptoInputStream<K extends MasterKey<K>> extends InputStream {
             }
         } else {
             // process the read bytes.
+            outBytes_ = new byte[cryptoHandler_.estimatePartialOutputSize(readLen)];
             processedLen = cryptoHandler_.processBytes(inputStreamBytes, 0, readLen, outBytes_, outStart_)
                     .getBytesWritten();
             hasProcessBytesCalled_ = true;
@@ -179,9 +182,6 @@ public class CryptoInputStream<K extends MasterKey<K>> extends InputStream {
      */
     @Override
     public int read(final byte[] b) throws IllegalArgumentException, IOException, BadCiphertextException {
-        if (b == null) {
-            throw new IllegalArgumentException("b cannot be null");
-        }
         return read(b, 0, b.length);
     }
 
@@ -222,6 +222,21 @@ public class CryptoInputStream<K extends MasterKey<K>> extends InputStream {
     }
 
     /**
+     * Sets an upper bound on the size of the input data. This method should be called before reading any data from the
+     * stream. If this method is not called prior to reading any data, performance may be reduced (notably, it will not
+     * be possible to cache data keys when encrypting).
+     *
+     * Among other things, this size is used to enforce limits configured on the {@link CachingCryptoMaterialsManager}.
+     *
+     * If the input size set here is exceeded, an exception will be thrown, and the encyption or decryption will fail.
+     *
+     * @param size Maximum input size.
+     */
+    public void setMaxInputLength(long size) {
+        cryptoHandler_.setMaxInputLength(size);
+    }
+
+    /**
      * Returns the result of the cryptographic operations including associate metadata.
      * 
      * @throws IOException
@@ -229,11 +244,14 @@ public class CryptoInputStream<K extends MasterKey<K>> extends InputStream {
      */
     public CryptoResult<CryptoInputStream<K>, K> getCryptoResult() throws BadCiphertextException, IOException {
         while (!cryptoHandler_.getHeaders().isComplete()) {
-            fillOutBytes();
+            if (fillOutBytes() == -1) {
+                throw new BadCiphertextException("No CiphertextHeaders found.");
+            }
         }
-        return new CryptoResult<CryptoInputStream<K>, K>(
+        //noinspection unchecked
+        return new CryptoResult<>(
                 this,
-                cryptoHandler_.getMasterKeys(),
+                (List<K>) cryptoHandler_.getMasterKeys(),
                 cryptoHandler_.getHeaders());
     }
 }

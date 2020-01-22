@@ -119,7 +119,10 @@ public class CiphertextFooters {
             mAuth_ = Arrays.copyOfRange(b, off, off + authLength_);
             return authLength_;
         } else {
-            throw new ParseException("Not enough bytes to parse mAuth");
+            throw new ParseException("Not enough bytes to parse mAuth, "
+                   + " needed at least " + authLength_ + " bytes, but only had "
+                   + len + " bytes");
+            
         }
     }
 }

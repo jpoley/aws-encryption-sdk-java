@@ -19,24 +19,45 @@ import com.amazonaws.encryptionsdk.MasterKey;
  * This exception is thrown when the SDK attempts to use a {@link MasterKey} which either doesn't
  * exist or to which it doesn't have access.
  */
+//@ non_null_by_default
 public class NoSuchMasterKeyException extends AwsCryptoException {
     private static final long serialVersionUID = -1L;
 
+    /*@ public normal_behavior
+      @   ensures standardThrowable();
+      @*/
+    //@ pure
     public NoSuchMasterKeyException() {
     }
 
+    /*@ public normal_behavior
+      @   ensures standardThrowable(message);
+      @*/
+    //@ pure
     public NoSuchMasterKeyException(final String message) {
         super(message);
     }
 
+    /*@ public normal_behavior
+      @   ensures standardThrowable(cause);
+      @*/
+    //@ pure
     public NoSuchMasterKeyException(final Throwable cause) {
         super(cause);
     }
 
+    /*@ public normal_behavior
+      @   ensures standardThrowable(message,cause);
+      @*/
+    //@ pure
     public NoSuchMasterKeyException(final String message, final Throwable cause) {
         super(message, cause);
     }
 
+    /*@ public normal_behavior
+      @   ensures standardThrowable(message,cause);
+      @*/
+    //@ pure // TODO
     public NoSuchMasterKeyException(final String message, final Throwable cause,
             final boolean enableSuppression, final boolean writableStackTrace) {
         super(message, cause, enableSuppression, writableStackTrace);

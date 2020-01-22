@@ -11,7 +11,7 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package com.amazonaws.services.kms;
+package com.amazonaws.encryptionsdk.kms;
 
 import java.nio.ByteBuffer;
 import java.security.SecureRandom;
@@ -29,7 +29,9 @@ import com.amazonaws.AmazonWebServiceRequest;
 import com.amazonaws.ResponseMetadata;
 import com.amazonaws.regions.Region;
 import com.amazonaws.regions.Regions;
+import com.amazonaws.services.kms.AWSKMSClient;
 import com.amazonaws.services.kms.model.CreateAliasRequest;
+import com.amazonaws.services.kms.model.CreateAliasResult;
 import com.amazonaws.services.kms.model.CreateGrantRequest;
 import com.amazonaws.services.kms.model.CreateGrantResult;
 import com.amazonaws.services.kms.model.CreateKeyRequest;
@@ -37,12 +39,17 @@ import com.amazonaws.services.kms.model.CreateKeyResult;
 import com.amazonaws.services.kms.model.DecryptRequest;
 import com.amazonaws.services.kms.model.DecryptResult;
 import com.amazonaws.services.kms.model.DeleteAliasRequest;
+import com.amazonaws.services.kms.model.DeleteAliasResult;
 import com.amazonaws.services.kms.model.DescribeKeyRequest;
 import com.amazonaws.services.kms.model.DescribeKeyResult;
 import com.amazonaws.services.kms.model.DisableKeyRequest;
+import com.amazonaws.services.kms.model.DisableKeyResult;
 import com.amazonaws.services.kms.model.DisableKeyRotationRequest;
+import com.amazonaws.services.kms.model.DisableKeyRotationResult;
 import com.amazonaws.services.kms.model.EnableKeyRequest;
+import com.amazonaws.services.kms.model.EnableKeyResult;
 import com.amazonaws.services.kms.model.EnableKeyRotationRequest;
+import com.amazonaws.services.kms.model.EnableKeyRotationResult;
 import com.amazonaws.services.kms.model.EncryptRequest;
 import com.amazonaws.services.kms.model.EncryptResult;
 import com.amazonaws.services.kms.model.GenerateDataKeyRequest;
@@ -68,28 +75,39 @@ import com.amazonaws.services.kms.model.ListKeysRequest;
 import com.amazonaws.services.kms.model.ListKeysResult;
 import com.amazonaws.services.kms.model.NotFoundException;
 import com.amazonaws.services.kms.model.PutKeyPolicyRequest;
+import com.amazonaws.services.kms.model.PutKeyPolicyResult;
 import com.amazonaws.services.kms.model.ReEncryptRequest;
 import com.amazonaws.services.kms.model.ReEncryptResult;
 import com.amazonaws.services.kms.model.RetireGrantRequest;
+import com.amazonaws.services.kms.model.RetireGrantResult;
 import com.amazonaws.services.kms.model.RevokeGrantRequest;
+import com.amazonaws.services.kms.model.RevokeGrantResult;
 import com.amazonaws.services.kms.model.UpdateKeyDescriptionRequest;
+import com.amazonaws.services.kms.model.UpdateKeyDescriptionResult;
 
 public class MockKMSClient extends AWSKMSClient {
     private static final SecureRandom rnd = new SecureRandom();
     private static final String ACCOUNT_ID = "01234567890";
     private final Map<DecryptMapKey, DecryptResult> results_ = new HashMap<>();
-    private final Map<String, String> idToArnMap = new HashMap<>();
     private final Set<String> activeKeys = new HashSet<>();
+    private final Map<String, String> keyAliases = new HashMap<>();
     private Region region_ = Region.getRegion(Regions.DEFAULT_REGION);
 
     @Override
-    public void createAlias(CreateAliasRequest arg0) throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+    public CreateAliasResult createAlias(CreateAliasRequest arg0) throws AmazonServiceException, AmazonClientException {
+        assertExists(arg0.getTargetKeyId());
+
+        keyAliases.put(
+                "alias/" + arg0.getAliasName(),
+                keyAliases.get(arg0.getTargetKeyId())
+        );
+
+        return new CreateAliasResult();
     }
 
     @Override
     public CreateGrantResult createGrant(CreateGrantRequest arg0) throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
@@ -101,8 +119,9 @@ public class MockKMSClient extends AWSKMSClient {
     public CreateKeyResult createKey(CreateKeyRequest req) throws AmazonServiceException, AmazonClientException {
         String keyId = UUID.randomUUID().toString();
         String arn = "arn:aws:kms:" + region_.getName() + ":" + ACCOUNT_ID + ":key/" + keyId;
-        idToArnMap.put(keyId, arn);
         activeKeys.add(arn);
+        keyAliases.put(keyId, arn);
+        keyAliases.put(arn, arn);
         CreateKeyResult result = new CreateKeyResult();
         result.setKeyMetadata(new KeyMetadata().withAWSAccountId(ACCOUNT_ID).withCreationDate(new Date())
                 .withDescription(req.getDescription()).withEnabled(true).withKeyId(keyId)
@@ -128,8 +147,8 @@ public class MockKMSClient extends AWSKMSClient {
     }
 
     @Override
-    public void deleteAlias(DeleteAliasRequest arg0) throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+    public DeleteAliasResult deleteAlias(DeleteAliasRequest arg0) throws AmazonServiceException, AmazonClientException {
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
@@ -143,31 +162,37 @@ public class MockKMSClient extends AWSKMSClient {
     }
 
     @Override
-    public void disableKey(DisableKeyRequest arg0) throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+    public DisableKeyResult disableKey(DisableKeyRequest arg0) throws AmazonServiceException, AmazonClientException {
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
-    public void disableKeyRotation(DisableKeyRotationRequest arg0) throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+    public DisableKeyRotationResult disableKeyRotation(DisableKeyRotationRequest arg0) throws AmazonServiceException, AmazonClientException {
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
-    public void enableKey(EnableKeyRequest arg0) throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+    public EnableKeyResult enableKey(EnableKeyRequest arg0) throws AmazonServiceException, AmazonClientException {
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
-    public void enableKeyRotation(EnableKeyRotationRequest arg0) throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+    public EnableKeyRotationResult enableKeyRotation(EnableKeyRotationRequest arg0) throws AmazonServiceException, AmazonClientException {
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
     public EncryptResult encrypt(EncryptRequest req) throws AmazonServiceException, AmazonClientException {
+        // We internally delegate to encrypt, so as to avoid mockito detecting extra calls to encrypt when spying on the
+        // MockKMSClient, we put the real logic into a separate function.
+        return encrypt0(req);
+    }
+
+    private EncryptResult encrypt0(EncryptRequest req) throws AmazonServiceException, AmazonClientException {
         final byte[] cipherText = new byte[512];
         rnd.nextBytes(cipherText);
         DecryptResult dec = new DecryptResult();
-        dec.withKeyId(req.getKeyId()).withPlaintext(req.getPlaintext().asReadOnlyBuffer());
+        dec.withKeyId(retrieveArn(req.getKeyId())).withPlaintext(req.getPlaintext().asReadOnlyBuffer());
         ByteBuffer ctBuff = ByteBuffer.wrap(cipherText);
 
         results_.put(new DecryptMapKey(ctBuff, req.getEncryptionContext()), dec);
@@ -186,14 +211,14 @@ public class MockKMSClient extends AWSKMSClient {
             } else if (req.getKeySpec().contains("128")) {
                 pt = new byte[16];
             } else {
-                throw new UnsupportedOperationException();
+                throw new java.lang.UnsupportedOperationException();
             }
         } else {
             pt = new byte[req.getNumberOfBytes()];
         }
         rnd.nextBytes(pt);
         ByteBuffer ptBuff = ByteBuffer.wrap(pt);
-        EncryptResult encryptResult = encrypt(new EncryptRequest().withKeyId(req.getKeyId()).withPlaintext(ptBuff)
+        EncryptResult encryptResult = encrypt0(new EncryptRequest().withKeyId(req.getKeyId()).withPlaintext(ptBuff)
                 .withEncryptionContext(req.getEncryptionContext()));
         String arn = retrieveArn(req.getKeyId());
         return new GenerateDataKeyResult().withKeyId(arn).withCiphertextBlob(encryptResult.getCiphertextBlob())
@@ -203,90 +228,94 @@ public class MockKMSClient extends AWSKMSClient {
     @Override
     public GenerateDataKeyWithoutPlaintextResult generateDataKeyWithoutPlaintext(
             GenerateDataKeyWithoutPlaintextRequest req) throws AmazonServiceException, AmazonClientException {
-        GenerateDataKeyResult generateDataKey = generateDataKey(new GenerateDataKeyRequest().withEncryptionContext(
-                req.getEncryptionContext()).withNumberOfBytes(req.getNumberOfBytes()));
+        GenerateDataKeyRequest generateDataKeyRequest = new GenerateDataKeyRequest().withEncryptionContext(req.getEncryptionContext())
+                                                                                    .withGrantTokens(req.getGrantTokens())
+                                                                                    .withKeyId(req.getKeyId())
+                                                                                    .withKeySpec(req.getKeySpec())
+                                                                                    .withNumberOfBytes(req.getNumberOfBytes());
+        GenerateDataKeyResult generateDataKey = generateDataKey(generateDataKeyRequest);
         String arn = retrieveArn(req.getKeyId());
         return new GenerateDataKeyWithoutPlaintextResult().withCiphertextBlob(generateDataKey.getCiphertextBlob())
-                .withKeyId(arn);
+                                                          .withKeyId(arn);
     }
 
     @Override
     public GenerateRandomResult generateRandom() throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
     public GenerateRandomResult generateRandom(GenerateRandomRequest arg0) throws AmazonServiceException,
             AmazonClientException {
-        throw new UnsupportedOperationException();
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
     public ResponseMetadata getCachedResponseMetadata(AmazonWebServiceRequest arg0) {
-        throw new UnsupportedOperationException();
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
     public GetKeyPolicyResult getKeyPolicy(GetKeyPolicyRequest arg0) throws AmazonServiceException,
             AmazonClientException {
-        throw new UnsupportedOperationException();
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
     public GetKeyRotationStatusResult getKeyRotationStatus(GetKeyRotationStatusRequest arg0)
             throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
     public ListAliasesResult listAliases() throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
     public ListAliasesResult listAliases(ListAliasesRequest arg0) throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
     public ListGrantsResult listGrants(ListGrantsRequest arg0) throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
     public ListKeyPoliciesResult listKeyPolicies(ListKeyPoliciesRequest arg0) throws AmazonServiceException,
             AmazonClientException {
-        throw new UnsupportedOperationException();
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
     public ListKeysResult listKeys() throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
     public ListKeysResult listKeys(ListKeysRequest arg0) throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
-    public void putKeyPolicy(PutKeyPolicyRequest arg0) throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+    public PutKeyPolicyResult putKeyPolicy(PutKeyPolicyRequest arg0) throws AmazonServiceException, AmazonClientException {
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
     public ReEncryptResult reEncrypt(ReEncryptRequest arg0) throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
-    public void retireGrant(RetireGrantRequest arg0) throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+    public RetireGrantResult retireGrant(RetireGrantRequest arg0) throws AmazonServiceException, AmazonClientException {
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
-    public void revokeGrant(RevokeGrantRequest arg0) throws AmazonServiceException, AmazonClientException {
-        throw new UnsupportedOperationException();
+    public RevokeGrantResult revokeGrant(RevokeGrantRequest arg0) throws AmazonServiceException, AmazonClientException {
+        throw new java.lang.UnsupportedOperationException();
     }
 
     @Override
@@ -305,9 +334,9 @@ public class MockKMSClient extends AWSKMSClient {
     }
 
     @Override
-    public void updateKeyDescription(UpdateKeyDescriptionRequest arg0) throws AmazonServiceException,
+    public UpdateKeyDescriptionResult updateKeyDescription(UpdateKeyDescriptionRequest arg0) throws AmazonServiceException,
             AmazonClientException {
-        throw new UnsupportedOperationException();
+        throw new java.lang.UnsupportedOperationException();
     }
 
     public void deleteKey(final String keyId) {
@@ -316,20 +345,17 @@ public class MockKMSClient extends AWSKMSClient {
     }
 
     private String retrieveArn(final String keyId) {
-        String arn = keyId;
-        if (keyId.contains("arn:") == false) {
-            arn = idToArnMap.get(keyId);
-        }
+        String arn = keyAliases.get(keyId);
         assertExists(arn);
         return arn;
     }
 
     private void assertExists(String keyId) {
-        if (idToArnMap.containsKey(keyId)) {
-            keyId = idToArnMap.get(keyId);
+        if (keyAliases.containsKey(keyId)) {
+            keyId = keyAliases.get(keyId);
         }
         if (keyId == null || !activeKeys.contains(keyId)) {
-            throw new NotFoundException("Key doesn't exist");
+            throw new NotFoundException("Key doesn't exist: " + keyId);
         }
     }
 

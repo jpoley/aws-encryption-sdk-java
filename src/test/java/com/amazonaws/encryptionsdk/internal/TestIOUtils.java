@@ -23,8 +23,7 @@ import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
-
-import org.apache.commons.lang3.RandomStringUtils;
+import java.util.Random;
 
 public class TestIOUtils {
     private static final SecureRandom rng_ = new SecureRandom();
@@ -33,8 +32,25 @@ public class TestIOUtils {
         return RandomBytesGenerator.generate(size);
     }
 
+    /**
+     * Generates and returns a string of the given {@code length}.
+     * <p>
+     * This function can be replaced by the RandomStringUtil class
+     * from Apache Commons.
+     * <p>
+     * This method re-implemented here to keep this library's dependency
+     * to a minimum which would reduce friction when it's consumed
+     * by other packages.
+     */
     public static String generateRandomString(final int size) {
-        return RandomStringUtils.random(size);
+        StringBuilder sb = new StringBuilder();
+        Random rand = new Random();
+        for (int i = 0; i < size; i++) {
+            int c = rand.nextInt(Byte.MAX_VALUE);
+            c = c == 0 ? (c + 1) : c;
+            sb.append((char)c);
+        }
+        return sb.toString();
     }
 
     public static byte[] computeFileDigest(final String fileName) throws IOException {

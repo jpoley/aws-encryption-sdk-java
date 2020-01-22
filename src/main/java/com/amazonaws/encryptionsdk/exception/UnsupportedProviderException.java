@@ -19,24 +19,45 @@ import com.amazonaws.encryptionsdk.MasterKeyProvider;
  * This exception is thrown when there are no {@link MasterKeyProvider}s which which support the
  * requested {@code provider} value.
  */
+//@ non_null_by_default
 public class UnsupportedProviderException extends AwsCryptoException {
     private static final long serialVersionUID = -1L;
 
+    /*@ public normal_behavior
+      @   ensures standardThrowable();
+      @*/
+    //@ pure
     public UnsupportedProviderException() {
     }
 
+    /*@ public normal_behavior
+      @   ensures standardThrowable(message);
+      @*/
+    //@ pure
     public UnsupportedProviderException(final String message) {
         super(message);
     }
 
+    /*@ public normal_behavior
+      @   ensures standardThrowable(cause);
+      @*/
+    //@ pure
     public UnsupportedProviderException(final Throwable cause) {
         super(cause);
     }
 
+    /*@ public normal_behavior
+      @   ensures standardThrowable(message,cause);
+      @*/
+    //@ pure
     public UnsupportedProviderException(final String message, final Throwable cause) {
         super(message, cause);
     }
 
+    /*@ public normal_behavior
+      @   ensures standardThrowable(message,cause);
+      @*/
+    //@ pure // TODO
     public UnsupportedProviderException(final String message, final Throwable cause,
             final boolean enableSuppression, final boolean writableStackTrace) {
         super(message, cause, enableSuppression, writableStackTrace);

@@ -21,37 +21,30 @@ import org.junit.Test;
 
 import com.amazonaws.encryptionsdk.AwsCrypto;
 import com.amazonaws.encryptionsdk.CryptoAlgorithm;
+import com.amazonaws.encryptionsdk.DefaultCryptoMaterialsManager;
+import com.amazonaws.encryptionsdk.MasterKey;
 import com.amazonaws.encryptionsdk.exception.AwsCryptoException;
 import com.amazonaws.encryptionsdk.exception.BadCiphertextException;
-import com.amazonaws.encryptionsdk.kms.KmsMasterKey;
-import com.amazonaws.encryptionsdk.kms.KmsMasterKeyProvider;
 import com.amazonaws.encryptionsdk.model.CiphertextType;
-import com.amazonaws.regions.Region;
-import com.amazonaws.regions.Regions;
-import com.amazonaws.services.kms.MockKMSClient;
+import com.amazonaws.encryptionsdk.model.EncryptionMaterialsRequest;
+import com.amazonaws.encryptionsdk.model.EncryptionMaterials;
 
 public class DecryptionHandlerTest {
-    private MockKMSClient mockKMSClient;
-    private String cmkId;
-    private KmsMasterKey customerMasterKey_;
-    private KmsMasterKeyProvider customerMasterKeyProvider_;
+    private StaticMasterKey masterKeyProvider_;
 
     @Before
     public void init() {
-        mockKMSClient = new MockKMSClient();
-        cmkId = mockKMSClient.createKey().getKeyMetadata().getKeyId();
-        customerMasterKeyProvider_ = new MockKmsProvider(mockKMSClient);
-        customerMasterKey_ = customerMasterKeyProvider_.getMasterKey(cmkId);
+        masterKeyProvider_ = new StaticMasterKey("testmaterial");
     }
 
     @Test(expected = NullPointerException.class)
     public void nullMasterKey() {
-        new DecryptionHandler<KmsMasterKey>(null);
+        DecryptionHandler.create((MasterKey)null);
     }
 
     @Test(expected = AwsCryptoException.class)
     public void invalidLenProcessBytes() {
-        final DecryptionHandler<KmsMasterKey> decryptionHandler = new DecryptionHandler<>(customerMasterKeyProvider_);
+        final DecryptionHandler<StaticMasterKey> decryptionHandler = DecryptionHandler.create(masterKeyProvider_);
         final byte[] in = new byte[1];
         final byte[] out = new byte[1];
         decryptionHandler.processBytes(in, 0, -1, out, 0);
@@ -59,7 +52,7 @@ public class DecryptionHandlerTest {
 
     @Test(expected = AwsCryptoException.class)
     public void maxLenProcessBytes() {
-        final DecryptionHandler<KmsMasterKey> decryptionHandler = new DecryptionHandler<>(customerMasterKeyProvider_);
+        final DecryptionHandler<StaticMasterKey> decryptionHandler = DecryptionHandler.create(masterKeyProvider_);
         // Create input of size 3 bytes: 1 byte containing version, 1 byte
         // containing type, and 1 byte containing half of the algoId short
         // primitive. Only 1 byte of the algoId is provided because this
@@ -75,21 +68,8 @@ public class DecryptionHandlerTest {
     }
 
     @Test(expected = BadCiphertextException.class)
-    public void headerIntegerityFailure() {
-        final CryptoAlgorithm cryptoAlgorithm_ = AwsCrypto.getDefaultCryptoAlgorithm();
-        final int frameSize_ = AwsCrypto.getDefaultFrameSize();
-        final Map<String, String> encryptionContext = Collections.<String, String> emptyMap();
-
-        final EncryptionHandler<KmsMasterKey> encryptionHandler = new EncryptionHandler<>(
-                Collections.singletonList(customerMasterKey_),
-                encryptionContext,
-                cryptoAlgorithm_, frameSize_);
-
-        // create the ciphertext headers by calling encryption handler.
-        final byte[] in = new byte[0];
-        final int ciphertextLen = encryptionHandler.estimateOutputSize(in.length);
-        final byte[] ciphertext = new byte[ciphertextLen];
-        encryptionHandler.processBytes(in, 0, in.length, ciphertext, 0);
+    public void headerIntegrityFailure() {
+        byte[] ciphertext = getTestHeaders();
 
         // tamper the fifth byte in the header which corresponds to the first
         // byte of the message identifier. We do this because tampering the
@@ -97,73 +77,65 @@ public class DecryptionHandlerTest {
         ciphertext[5] += 1;
 
         // attempt to decrypt with the tampered header.
-        final DecryptionHandler<KmsMasterKey> decryptionHandler = new DecryptionHandler<>(customerMasterKeyProvider_);
-        final int plaintextLen = decryptionHandler.estimateOutputSize(ciphertextLen);
+        final DecryptionHandler<StaticMasterKey> decryptionHandler = DecryptionHandler.create(masterKeyProvider_);
+        final int plaintextLen = decryptionHandler.estimateOutputSize(ciphertext.length);
         final byte[] plaintext = new byte[plaintextLen];
-        decryptionHandler.processBytes(ciphertext, 0, ciphertextLen, plaintext, 0);
+        decryptionHandler.processBytes(ciphertext, 0, ciphertext.length, plaintext, 0);
     }
 
     @Test(expected = BadCiphertextException.class)
     public void invalidVersion() {
-        final CryptoAlgorithm cryptoAlgorithm_ = AwsCrypto.getDefaultCryptoAlgorithm();
-        final int frameSize_ = AwsCrypto.getDefaultFrameSize();
-        final Map<String, String> encryptionContext = Collections.<String, String> emptyMap();
-
-        final EncryptionHandler<KmsMasterKey> encryptionHandler = new EncryptionHandler<>(
-                Collections.singletonList(customerMasterKey_),
-                encryptionContext,
-                cryptoAlgorithm_, frameSize_);
-
-        // create the ciphertext headers by calling encryption handler.
-        final byte[] in = new byte[0];
-        final int ciphertextLen = encryptionHandler.estimateOutputSize(in.length);
-        final byte[] ciphertext = new byte[ciphertextLen];
-        encryptionHandler.processBytes(in, 0, in.length, ciphertext, 0);
+        byte[] ciphertext = getTestHeaders();
 
         // set byte containing version to invalid value.
         ciphertext[0] += VersionInfo.CURRENT_CIPHERTEXT_VERSION + 1;
 
         // attempt to decrypt with the tampered header.
-        final DecryptionHandler<KmsMasterKey> decryptionHandler = new DecryptionHandler<>(customerMasterKeyProvider_);
-        final int plaintextLen = decryptionHandler.estimateOutputSize(ciphertextLen);
+        final DecryptionHandler<StaticMasterKey> decryptionHandler = DecryptionHandler.create(masterKeyProvider_);
+        final int plaintextLen = decryptionHandler.estimateOutputSize(ciphertext.length);
         final byte[] plaintext = new byte[plaintextLen];
-        decryptionHandler.processBytes(ciphertext, 0, ciphertextLen, plaintext, 0);
+        decryptionHandler.processBytes(ciphertext, 0, ciphertext.length, plaintext, 0);
     }
 
     @Test(expected = AwsCryptoException.class)
     public void invalidCMK() {
+        final byte[] ciphertext = getTestHeaders();
+        
+        masterKeyProvider_.setKeyId(masterKeyProvider_.getKeyId() + "nonsense");
+
+        // attempt to decrypt with the tampered header.
+        final DecryptionHandler<StaticMasterKey> decryptionHandler = DecryptionHandler.create(masterKeyProvider_);
+        final int plaintextLen = decryptionHandler.estimateOutputSize(ciphertext.length);
+        final byte[] plaintext = new byte[plaintextLen];
+        decryptionHandler.processBytes(ciphertext, 0, ciphertext.length, plaintext, 0);
+    }
+
+    private byte[] getTestHeaders() {
         final CryptoAlgorithm cryptoAlgorithm_ = AwsCrypto.getDefaultCryptoAlgorithm();
         final int frameSize_ = AwsCrypto.getDefaultFrameSize();
         final Map<String, String> encryptionContext = Collections.<String, String> emptyMap();
 
-        customerMasterKeyProvider_.setRegion(Region.getRegion(Regions.AP_NORTHEAST_1));
-        final String apneId = mockKMSClient.createKey().getKeyMetadata().getKeyId();
-        KmsMasterKey apneKey = customerMasterKeyProvider_.getMasterKey(apneId);
+        final EncryptionMaterialsRequest encryptionMaterialsRequest = EncryptionMaterialsRequest.newBuilder()
+                                                                                                .setContext(encryptionContext)
+                                                                                                .setRequestedAlgorithm(cryptoAlgorithm_)
+                                                                                                .build();
 
-        final EncryptionHandler<KmsMasterKey> encryptionHandler = new EncryptionHandler<>(
-                Collections.singletonList(apneKey),
-                encryptionContext,
-                cryptoAlgorithm_, frameSize_);
+        final EncryptionMaterials encryptionMaterials = new DefaultCryptoMaterialsManager(masterKeyProvider_)
+                .getMaterialsForEncrypt(encryptionMaterialsRequest);
+
+        final EncryptionHandler encryptionHandler = new EncryptionHandler(frameSize_, encryptionMaterials);
 
         // create the ciphertext headers by calling encryption handler.
         final byte[] in = new byte[0];
         final int ciphertextLen = encryptionHandler.estimateOutputSize(in.length);
         final byte[] ciphertext = new byte[ciphertextLen];
         encryptionHandler.processBytes(in, 0, in.length, ciphertext, 0);
-
-        // Swap the provider to a different region and attempt decryption
-        customerMasterKeyProvider_.setRegion(Region.getRegion(Regions.SA_EAST_1));
-
-        // attempt to decrypt with the tampered header.
-        final DecryptionHandler<KmsMasterKey> decryptionHandler = new DecryptionHandler<>(customerMasterKeyProvider_);
-        final int plaintextLen = decryptionHandler.estimateOutputSize(ciphertextLen);
-        final byte[] plaintext = new byte[plaintextLen];
-        decryptionHandler.processBytes(ciphertext, 0, ciphertextLen, plaintext, 0);
+        return ciphertext;
     }
 
     @Test(expected = AwsCryptoException.class)
     public void invalidOffsetProcessBytes() {
-        final DecryptionHandler<KmsMasterKey> decryptionHandler = new DecryptionHandler<>(customerMasterKeyProvider_);
+        final DecryptionHandler<StaticMasterKey> decryptionHandler = DecryptionHandler.create(masterKeyProvider_);
         final byte[] in = new byte[1];
         final byte[] out = new byte[1];
         decryptionHandler.processBytes(in, -1, in.length, out, 0);

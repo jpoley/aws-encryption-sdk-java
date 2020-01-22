@@ -16,8 +16,7 @@ package com.amazonaws.encryptionsdk;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.security.InvalidKeyException;
-import java.security.Provider;
-import java.security.Security;
+import java.security.NoSuchAlgorithmException;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Map;
@@ -25,11 +24,7 @@ import java.util.Map;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
-import org.bouncycastle.crypto.Digest;
-import org.bouncycastle.crypto.digests.SHA256Digest;
-import org.bouncycastle.crypto.digests.SHA384Digest;
-import org.bouncycastle.crypto.generators.HKDFBytesGenerator;
-import org.bouncycastle.crypto.params.HKDFParameters;
+import com.amazonaws.encryptionsdk.internal.HmacKeyDerivationFunction;
 
 import com.amazonaws.encryptionsdk.internal.Constants;
 import com.amazonaws.encryptionsdk.model.CiphertextHeaders;
@@ -46,49 +41,49 @@ public enum CryptoAlgorithm {
     /**
      * AES-GCM 128
      */
-    ALG_AES_128_GCM_IV12_TAG16_NO_KDF(128, 12, 16, Constants.GCM_MAX_CONTENT_LEN, "AES", 16, 0x0014, "AES", 16),
+    ALG_AES_128_GCM_IV12_TAG16_NO_KDF(128, 12, 16, Constants.GCM_MAX_CONTENT_LEN, "AES", 16, 0x0014, "AES", 16, false),
     /**
      * AES-GCM 192
      */
-    ALG_AES_192_GCM_IV12_TAG16_NO_KDF(128, 12, 16, Constants.GCM_MAX_CONTENT_LEN, "AES", 24, 0x0046, "AES", 24),
+    ALG_AES_192_GCM_IV12_TAG16_NO_KDF(128, 12, 16, Constants.GCM_MAX_CONTENT_LEN, "AES", 24, 0x0046, "AES", 24, false),
     /**
      * AES-GCM 256
      */
-    ALG_AES_256_GCM_IV12_TAG16_NO_KDF(128, 12, 16, Constants.GCM_MAX_CONTENT_LEN, "AES", 32, 0x0078, "AES", 32),
+    ALG_AES_256_GCM_IV12_TAG16_NO_KDF(128, 12, 16, Constants.GCM_MAX_CONTENT_LEN, "AES", 32, 0x0078, "AES", 32, false),
     /**
      * AES-GCM 128 with HKDF-SHA256
      */
     ALG_AES_128_GCM_IV12_TAG16_HKDF_SHA256(128, 12, 16, Constants.GCM_MAX_CONTENT_LEN, "AES", 16, 0x0114, "HkdfSHA256",
-            16),
+                                           16, true),
     /**
      * AES-GCM 192
      */
     ALG_AES_192_GCM_IV12_TAG16_HKDF_SHA256(128, 12, 16, Constants.GCM_MAX_CONTENT_LEN, "AES", 24, 0x0146, "HkdfSHA256",
-            24),
+                                           24, true),
     /**
      * AES-GCM 256
      */
     ALG_AES_256_GCM_IV12_TAG16_HKDF_SHA256(128, 12, 16, Constants.GCM_MAX_CONTENT_LEN, "AES", 32, 0x0178, "HkdfSHA256",
-            32),
+                                           32, true),
 
     /**
      * AES-GCM 128 with ECDSA (SHA256 with the secp256r1 curve)
      */
     ALG_AES_128_GCM_IV12_TAG16_HKDF_SHA256_ECDSA_P256(128, 12, 16, Constants.GCM_MAX_CONTENT_LEN, "AES", 16, 0x0214,
-            "HkdfSHA256", 16,
-            "SHA256withECDSA", 72),
+                                                      "HkdfSHA256", 16,
+                                                      true, "SHA256withECDSA", 71),
     /**
      * AES-GCM 192 with ECDSA (SHA384 with the secp384r1 curve)
      */
     ALG_AES_192_GCM_IV12_TAG16_HKDF_SHA384_ECDSA_P384(128, 12, 16, Constants.GCM_MAX_CONTENT_LEN, "AES", 24, 0x0346,
-            "HkdfSHA384", 24,
-            "SHA384withECDSA", 104),
+                                                      "HkdfSHA384", 24,
+                                                      true, "SHA384withECDSA", 103),
     /**
      * AES-GCM 256 with ECDSA (SHA384 with the secp384r1 curve)
      */
     ALG_AES_256_GCM_IV12_TAG16_HKDF_SHA384_ECDSA_P384(128, 12, 16, Constants.GCM_MAX_CONTENT_LEN, "AES", 32, 0x0378,
-            "HkdfSHA384", 32,
-            "SHA384withECDSA", 104);
+                                                      "HkdfSHA384", 32,
+                                                      true, "SHA384withECDSA", 103);
 
     private final int blockSizeBits_;
     private final byte nonceLenBytes_;
@@ -101,49 +96,44 @@ public enum CryptoAlgorithm {
     private final short trailingSigLen_;
     private final String dataKeyAlgo_;
     private final int dataKeyLen_;
-
-    static {
-        try {
-            Security.addProvider((Provider)
-                    Class.forName("org.bouncycastle.jce.provider.BouncyCastleProvider").newInstance());
-        } catch (final Throwable ex) {
-            // Swallow this error. We'll either succeed or fail later with reasonable
-            // stacktraces.
-        }
-    }
+    private final boolean safeToCache_;
 
     /*
      * Create a mapping between the CiphertextType object and its byte value representation. Make
      * this is a static method so the map is created when the object is created. This enables fast
      * lookups of the CryptoAlgorithm given its short value representation.
      */
-    private static final Map<Short, CryptoAlgorithm> ID_MAPPING = new HashMap<Short, CryptoAlgorithm>();
+    private static final Map<Short, CryptoAlgorithm> ID_MAPPING = new HashMap<>();
     static {
         for (final CryptoAlgorithm s : EnumSet.allOf(CryptoAlgorithm.class)) {
             ID_MAPPING.put(s.value_, s);
         }
     }
 
-    private CryptoAlgorithm(final int blockSizeBits, final int nonceLenBytes, final int tagLenBytes,
+    CryptoAlgorithm(
+            final int blockSizeBits, final int nonceLenBytes, final int tagLenBytes,
             final long maxContentLen, final String keyAlgo, final int keyLenBytes, final int value,
-            final String dataKeyAlgo, final int dataKeyLen) {
+            final String dataKeyAlgo, final int dataKeyLen, boolean safeToCache
+    ) {
         this(blockSizeBits, nonceLenBytes, tagLenBytes,
-                maxContentLen, keyAlgo, keyLenBytes, value,
-                dataKeyAlgo, dataKeyLen,
-                null, 0);
+             maxContentLen, keyAlgo, keyLenBytes, value,
+             dataKeyAlgo, dataKeyLen, safeToCache, null, 0);
 
     }
 
-    private CryptoAlgorithm(final int blockSizeBits, final int nonceLenBytes, final int tagLenBytes,
+    CryptoAlgorithm(
+            final int blockSizeBits, final int nonceLenBytes, final int tagLenBytes,
             final long maxContentLen, final String keyAlgo, final int keyLenBytes, final int value,
             final String dataKeyAlgo, final int dataKeyLen,
-            final String trailingSignatureAlgo, final int trailingSignatureLength) {
+            boolean safeToCache, final String trailingSignatureAlgo, final int trailingSignatureLength
+    ) {
         blockSizeBits_ = blockSizeBits;
         nonceLenBytes_ = (byte) nonceLenBytes;
         tagLenBytes_ = tagLenBytes;
         keyAlgo_ = keyAlgo;
         keyLenBytes_ = keyLenBytes;
         maxContentLen_ = maxContentLen;
+        safeToCache_ = safeToCache;
         if (value > Short.MAX_VALUE || value < Short.MIN_VALUE) {
             throw new IllegalArgumentException("Invalid value " + value);
         }
@@ -165,8 +155,7 @@ public enum CryptoAlgorithm {
      * @return the CryptoAlgorithm object that matches the given value, null if no match is found.
      */
     public static CryptoAlgorithm deserialize(final short value) {
-        final CryptoAlgorithm result = ID_MAPPING.get(value);
-        return result;
+        return ID_MAPPING.get(value);
     }
 
     /**
@@ -241,6 +230,15 @@ public enum CryptoAlgorithm {
     }
 
     /**
+     * Returns whether data keys used with this crypto algorithm can safely be cached and reused for a different
+     * message. If this returns false, reuse of data keys is likely to result in severe cryptographic weaknesses,
+     * potentially even with only a single such use.
+     */
+    public boolean isSafeToCache() {
+        return safeToCache_;
+    }
+
+    /**
      * Returns the length of the trailing signature generated by this algorithm. The actual trailing
      * signature may be shorter than this.
      */
@@ -255,7 +253,7 @@ public enum CryptoAlgorithm {
                     + dataKey.getAlgorithm());
         }
 
-        final Digest dgst;
+        final String macAlgorithm;
 
         switch (this) {
             case ALG_AES_128_GCM_IV12_TAG16_NO_KDF:
@@ -266,11 +264,11 @@ public enum CryptoAlgorithm {
             case ALG_AES_192_GCM_IV12_TAG16_HKDF_SHA256:
             case ALG_AES_256_GCM_IV12_TAG16_HKDF_SHA256:
             case ALG_AES_128_GCM_IV12_TAG16_HKDF_SHA256_ECDSA_P256:
-                dgst = new SHA256Digest();
+                macAlgorithm = "HmacSHA256";
                 break;
             case ALG_AES_192_GCM_IV12_TAG16_HKDF_SHA384_ECDSA_P384:
             case ALG_AES_256_GCM_IV12_TAG16_HKDF_SHA384_ECDSA_P384:
-                dgst = new SHA384Digest();
+                macAlgorithm = "HmacSHA384";
                 break;
             default:
                 throw new UnsupportedOperationException("Support for " + this + " not yet built.");
@@ -292,10 +290,14 @@ public enum CryptoAlgorithm {
                     + rawDataKey.length);
         }
 
-        final byte[] rawEncKey = new byte[getKeyLength()];
-        final HKDFBytesGenerator hkdf = new HKDFBytesGenerator(dgst);
-        hkdf.init(new HKDFParameters(rawDataKey, null, info.array()));
-        hkdf.generateBytes(rawEncKey, 0, getKeyLength());
-        return new SecretKeySpec(rawEncKey, getKeyAlgo());
+        final HmacKeyDerivationFunction hkdf;
+        try {
+            hkdf = HmacKeyDerivationFunction.getInstance(macAlgorithm);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+
+        hkdf.init(rawDataKey);
+        return new SecretKeySpec(hkdf.deriveKey(info.array(), getKeyLength()), getKeyAlgo());
     }
 }

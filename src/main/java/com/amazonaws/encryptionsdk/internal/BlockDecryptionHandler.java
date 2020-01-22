@@ -191,6 +191,16 @@ class BlockDecryptionHandler implements CryptoHandler {
         return outSize;
     }
 
+    @Override
+    public int estimatePartialOutputSize(int inLen) {
+        return estimateOutputSize(inLen);
+    }
+
+    @Override
+    public int estimateFinalOutputSize() {
+        return estimateOutputSize(0);
+    }
+
     /**
      * Returns the plaintext bytes of the encrypted content.
      * 
@@ -221,13 +231,8 @@ class BlockDecryptionHandler implements CryptoHandler {
                 seqNum,
                 blockHeaders_.getContentLength());
 
-        final CipherHandler cipherHandler = new CipherHandler(
-                decryptionKey_,
-                nonce,
-                contentAad,
-                Cipher.DECRYPT_MODE,
-                cryptoAlgo_);
-        return cipherHandler.cipherData(input, off, len);
+        final CipherHandler cipherHandler = new CipherHandler(decryptionKey_, Cipher.DECRYPT_MODE, cryptoAlgo_);
+        return cipherHandler.cipherData(nonce, contentAad, input, off, len);
     }
 
     @Override

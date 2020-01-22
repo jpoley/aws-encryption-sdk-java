@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except
  * in compliance with the License. A copy of the License is located at
@@ -36,24 +36,33 @@ import com.amazonaws.util.IOUtils;
  * <p>
  * Arguments:
  * <ol>
- * <li>KMS KeyArn
- * <li>File Name
+ * <li>Key ARN: For help finding the Amazon Resource Name (ARN) of your KMS customer master 
+ *    key (CMK), see 'Viewing Keys' at http://docs.aws.amazon.com/kms/latest/developerguide/viewing-keys.html
+ *
+  * <li>Name of file containing plaintext data to encrypt
  * </ol>
  *
- * Some organizations want the ability to decrypt their data even if KMS is unavailable. This
- * program demonstrates one possible way of accomplishing this by generating an "Escrow" RSA
- * key-pair and using that in addition to the KMS key for encryption. The organization would keep
- * the RSA private key someplace secure (such as an offline HSM) and distribute the public key their
- * developers. This way all standard use would use KMS for decryption, however the organization
- * maintains the ability to decrypt all ciphertexts in a completely offline manner.
+ * You might use AWS Key Management Service (KMS) for most encryption and decryption operations, but 
+ * still want the option of decrypting your data offline independently of KMS. This sample 
+ * demonstrates one way to do this.
+ * 
+ * The sample encrypts data under both a KMS customer master key (CMK) and an "escrowed" RSA key pair
+ * so that either key alone can decrypt it. You might commonly use the KMS CMK for decryption. However, 
+ * at any time, you can use the private RSA key to decrypt the ciphertext independent of KMS.
+ *
+ * This sample uses the JCEMasterKey class to generate a RSA public-private key pair
+ * and saves the key pair in memory. In practice, you would store the private key in a secure offline 
+ * location, such as an offline HSM, and distribute the public key to your development team.
+ *
  */
 public class EscrowedEncryptExample {
     private static PublicKey publicEscrowKey;
     private static PrivateKey privateEscrowKey;
 
     public static void main(final String[] args) throws Exception {
-        // In the real world, the public key would be distributed by the organization.
-        // For this demo, we'll just generate a new random one each time.
+        // This sample generates a new random key for each operation.
+        // In practice, you would distribute the public key and save the private key in secure
+        // storage.
         generateEscrowKeyPair();
 
         final String kmsArn = args[0];
@@ -66,23 +75,25 @@ public class EscrowedEncryptExample {
     }
 
     private static void standardEncrypt(final String kmsArn, final String fileName) throws Exception {
-        // Standard user encrypting to both KMS and the escrow public key
+        // Encrypt with the KMS CMK and the escrowed public key
         // 1. Instantiate the SDK
         final AwsCrypto crypto = new AwsCrypto();
 
-        // 2. Instantiate the providers
+        // 2. Instantiate a KMS master key provider
         final KmsMasterKeyProvider kms = new KmsMasterKeyProvider(kmsArn);
-        // Note that the standard user does not have access to the private escrow
-        // key and so simply passes in "null"
+        
+        // 3. Instantiate a JCE master key provider
+        // Because the user does not have access to the private escrow key,
+        // they pass in "null" for the private key parameter.
         final JceMasterKey escrowPub = JceMasterKey.getInstance(publicEscrowKey, null, "Escrow", "Escrow",
                 "RSA/ECB/OAEPWithSHA-512AndMGF1Padding");
 
-        // 3. Combine the providers into a single one
+        // 4. Combine the providers into a single master key provider
         final MasterKeyProvider<?> provider = MultipleProviderFactory.buildMultiProvider(kms, escrowPub);
 
-        // 4. Encrypt the file
-        // To simplify the code, we'll be omitted Encryption Context this time. Production code
-        // should always use Encryption Context. Please see the other examples for more information.
+        // 5. Encrypt the file
+        // To simplify the code, we omit the encryption context. Production code should always 
+        // use an encryption context. For an example, see the other SDK samples.
         final FileInputStream in = new FileInputStream(fileName);
         final FileOutputStream out = new FileOutputStream(fileName + ".encrypted");
         final CryptoOutputStream<?> encryptingStream = crypto.createEncryptingStream(provider, out);
@@ -93,25 +104,27 @@ public class EscrowedEncryptExample {
     }
 
     private static void standardDecrypt(final String kmsArn, final String fileName) throws Exception {
-        // A standard user decrypts the file. They can just use the same provider from before
-        // or could use a provider just referring to the KMS key. It doesn't matter.
+        // Decrypt with the KMS CMK and the escrow public key. You can use a combined provider, 
+        // as shown here, or just the KMS master key provider.
 
         // 1. Instantiate the SDK
         final AwsCrypto crypto = new AwsCrypto();
 
-        // 2. Instantiate the providers
+        // 2. Instantiate a KMS master key provider
         final KmsMasterKeyProvider kms = new KmsMasterKeyProvider(kmsArn);
-        // Note that the standard user does not have access to the private escrow
-        // key and so simply passes in "null"
+        
+        // 3. Instantiate a JCE master key provider
+        // Because the user does not have access to the private 
+        // escrow key, they pass in "null" for the private key parameter.
         final JceMasterKey escrowPub = JceMasterKey.getInstance(publicEscrowKey, null, "Escrow", "Escrow",
                 "RSA/ECB/OAEPWithSHA-512AndMGF1Padding");
 
-        // 3. Combine the providers into a single one
+        // 4. Combine the providers into a single master key provider
         final MasterKeyProvider<?> provider = MultipleProviderFactory.buildMultiProvider(kms, escrowPub);
 
-        // 4. Decrypt the file
-        // To simplify the code, we'll be omitted Encryption Context this time. Production code
-        // should always use Encryption Context. Please see the other examples for more information.
+        // 5. Decrypt the file
+        // To simplify the code, we omit the encryption context. Production code should always 
+        // use an encryption context. For an example, see the other SDK samples.
         final FileInputStream in = new FileInputStream(fileName + ".encrypted");
         final FileOutputStream out = new FileOutputStream(fileName + ".decrypted");
         final CryptoOutputStream<?> decryptingStream = crypto.createDecryptingStream(provider, out);
@@ -121,19 +134,20 @@ public class EscrowedEncryptExample {
     }
 
     private static void escrowDecrypt(final String fileName) throws Exception {
-        // The organization can decrypt using just the private escrow key with no calls to KMS
+        // You can decrypt the stream using only the private key.
+        // This method does not call KMS.
 
         // 1. Instantiate the SDK
         final AwsCrypto crypto = new AwsCrypto();
 
-        // 2. Instantiate the provider
-        // Note that the organization does have access to the private escrow key and can use it.
+        // 2. Instantiate a JCE master key provider
+        // This method call uses the escrowed private key, not null 
         final JceMasterKey escrowPriv = JceMasterKey.getInstance(publicEscrowKey, privateEscrowKey, "Escrow", "Escrow",
                 "RSA/ECB/OAEPWithSHA-512AndMGF1Padding");
 
         // 3. Decrypt the file
-        // To simplify the code, we'll be omitted Encryption Context this time. Production code
-        // should always use Encryption Context. Please see the other examples for more information.
+        // To simplify the code, we omit the encryption context. Production code should always 
+        // use an encryption context. For an example, see the other SDK samples.
         final FileInputStream in = new FileInputStream(fileName + ".encrypted");
         final FileOutputStream out = new FileOutputStream(fileName + ".deescrowed");
         final CryptoOutputStream<?> decryptingStream = crypto.createDecryptingStream(escrowPriv, out);

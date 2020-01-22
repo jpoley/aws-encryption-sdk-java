@@ -13,7 +13,8 @@
 
 package com.amazonaws.encryptionsdk.internal;
 
-import java.security.SecureRandom;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
@@ -22,7 +23,6 @@ import com.amazonaws.encryptionsdk.CryptoAlgorithm;
 import com.amazonaws.encryptionsdk.exception.AwsCryptoException;
 import com.amazonaws.encryptionsdk.exception.BadCiphertextException;
 import com.amazonaws.encryptionsdk.model.CipherFrameHeaders;
-import com.amazonaws.services.kms.model.InvalidCiphertextException;
 
 /**
  * The frame encryption handler is a subclass of the encryption handler and
@@ -33,9 +33,9 @@ import com.amazonaws.services.kms.model.InvalidCiphertextException;
  * in frames.
  */
 class FrameEncryptionHandler implements CryptoHandler {
-    private static final SecureRandom RND = new SecureRandom();
     private final SecretKey encryptionKey_;
     private final CryptoAlgorithm cryptoAlgo_;
+    private final CipherHandler cipherHandler_;
     private final int nonceLen_;
     private final byte[] messageId_;
     private final int frameSize_;
@@ -67,6 +67,7 @@ class FrameEncryptionHandler implements CryptoHandler {
         tagLenBytes_ = cryptoAlgo_.getTagLen();
         bytesToFrame_ = new byte[frameSize_];
         bytesToFrameLen_ = 0;
+        cipherHandler_ = new CipherHandler(encryptionKey_, Cipher.ENCRYPT_MODE, cryptoAlgo_);
     }
 
     /**
@@ -165,10 +166,70 @@ class FrameEncryptionHandler implements CryptoHandler {
         int frames = 0;
 
         // include any bytes held for inclusion in a subsequent frame
+        int totalContent = bytesToFrameLen_ + inLen;
+
+        // compute the size of the frames that will be constructed
+        frames = totalContent / frameSize_;
+        outSize += (frameSize_ * frames);
+
+        // account for remaining data that will need a new frame.
+        final int leftover = totalContent % frameSize_;
+        outSize += leftover;
+        // even if leftover is 0, there will be a final frame.
+        frames += 1;
+
+        /*
+         * Calculate overhead of frame headers.
+         */
+        // nonce and MAC tag.
+        outSize += frames * (nonceLen_ + tagLenBytes_);
+
+        // sequence number for all frames
+        outSize += frames * (Integer.SIZE / Byte.SIZE);
+
+        // sequence number end for final frame
+        outSize += Integer.SIZE / Byte.SIZE;
+
+        // integer for storing final frame size
+        outSize += Integer.SIZE / Byte.SIZE;
+
+        return outSize;
+    }
+
+    @Override
+    public int estimatePartialOutputSize(int inLen) {
+        int outSize = 0;
+        int frames = 0;
+
+        // include any bytes held for inclusion in a subsequent frame
         int totalContent = bytesToFrameLen_;
         if (inLen >= 0) {
             totalContent += inLen;
         }
+
+        // compute the size of the frames that will be constructed
+        frames = totalContent / frameSize_;
+        outSize += (frameSize_ * frames);
+
+        /*
+         * Calculate overhead of frame headers.
+         */
+        // nonce and MAC tag.
+        outSize += frames * (nonceLen_ + tagLenBytes_);
+
+        // sequence number for all frames
+        outSize += frames * (Integer.SIZE / Byte.SIZE);
+
+        return outSize;
+    }
+
+    @Override
+    public int estimateFinalOutputSize() {
+        int outSize = 0;
+        int frames = 0;
+
+        // include any bytes held for inclusion in a subsequent frame
+        int totalContent = bytesToFrameLen_;
 
         // compute the size of the frames that will be constructed
         frames = totalContent / frameSize_;
@@ -223,7 +284,10 @@ class FrameEncryptionHandler implements CryptoHandler {
      */
     private int writeEncryptedFrame(final byte[] input, final int off, final int len, final byte[] out, final int outOff)
             throws BadCiphertextException, AwsCryptoException {
-        if (frameNumber_ > Constants.MAX_FRAME_NUMBER) {
+        if (frameNumber_ > Constants.MAX_FRAME_NUMBER
+                // Make sure we have the appropriate flag set for the final frame; we don't want to accept
+                // non-final-frame data when there won't be a subsequent frame for it to go into.
+            || (frameNumber_ == Constants.MAX_FRAME_NUMBER && !isFinalFrame_)) {
             throw new AwsCryptoException("Frame number exceeded the maximum allowed value.");
         }
 
@@ -248,17 +312,9 @@ class FrameEncryptionHandler implements CryptoHandler {
                     frameSize_);
         }
 
-        final byte[] nonce = new byte[nonceLen_];
-        RND.nextBytes(nonce);
+        final byte[] nonce = getNonce();
 
-        // create and use a cipherhandler to encrypt data.
-        final CipherHandler cipherHandler = new CipherHandler(
-                encryptionKey_,
-                nonce,
-                contentAad,
-                Cipher.ENCRYPT_MODE,
-                cryptoAlgo_);
-        final byte[] encryptedBytes = cipherHandler.cipherData(input, off, len);
+        final byte[] encryptedBytes = cipherHandler_.cipherData(nonce, contentAad, input, off, len);
 
         // create the cipherblock headers now for the encrypted data
         final int encryptedContentLen = encryptedBytes.length - tagLenBytes_;
@@ -278,6 +334,35 @@ class FrameEncryptionHandler implements CryptoHandler {
         frameNumber_++;
 
         return outLen;
+    }
+
+    private byte[] getNonce() {
+        /*
+         * To mitigate the risk of IVs colliding within the same message, we use deterministic IV generation within a
+          * message.
+         */
+
+        if (frameNumber_ < 1) {
+            // This should never happen - however, since we use a "frame number zero" IV elsewhere (for header auth),
+            // we must be sure that we don't reuse it here.
+            throw new IllegalStateException("Illegal frame number");
+        }
+
+        if ((int)frameNumber_ == Constants.ENDFRAME_SEQUENCE_NUMBER && !isFinalFrame_) {
+            throw new IllegalStateException("Too many frames");
+        }
+
+        final byte[] nonce = new byte[nonceLen_];
+
+        ByteBuffer buf = ByteBuffer.wrap(nonce);
+        buf.order(ByteOrder.BIG_ENDIAN);
+        // We technically only allocate the low 32 bits for the frame number, and the other bits are defined to be
+        // zero. However, since MAX_FRAME_NUMBER is 2^32-1, the high-order four bytes of the long will be zero, so the
+        // big-endian representation will also have zeros in that position.
+        Utils.position(buf, buf.limit() - Long.BYTES);
+        buf.putLong(frameNumber_);
+
+        return nonce;
     }
 
     @Override

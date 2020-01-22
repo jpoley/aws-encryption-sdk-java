@@ -61,7 +61,7 @@ public abstract class MasterKeyProvider<K extends MasterKey<K>> {
      * @param keyId
      * @return
      * @throws UnsupportedProviderException
-     *             if this object cannot return {@link MasterKeys} associated with the given
+     *             if this object cannot return {@link MasterKey}s associated with the given
      *             provider
      * @throws NoSuchMasterKeyException
      *             if this object cannot find (and thus construct) the {@link MasterKey} associated
@@ -102,13 +102,10 @@ public abstract class MasterKeyProvider<K extends MasterKey<K>> {
         if (t == null || t.isEmpty()) {
             return new CannotUnwrapDataKeyException("Unable to decrypt any data keys");
         } else {
-            CannotUnwrapDataKeyException ex = null;
+            final CannotUnwrapDataKeyException ex = new CannotUnwrapDataKeyException("Unable to decrypt any data keys",
+                    t.get(0));
             for (final Throwable e : t) {
-                if (ex == null) {
-                    ex = new CannotUnwrapDataKeyException("Unable to decrypt any data keys", e);
-                } else {
-                    ex.addSuppressed(e);
-                }
+                ex.addSuppressed(e);
             }
             return ex;
         }

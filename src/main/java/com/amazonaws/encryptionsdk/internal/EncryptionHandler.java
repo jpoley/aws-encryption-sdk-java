@@ -13,30 +13,26 @@
 
 package com.amazonaws.encryptionsdk.internal;
 
-import static com.amazonaws.encryptionsdk.internal.Utils.assertNonNull;
-
+import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.security.InvalidKeyException;
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
-import java.security.SecureRandom;
+import java.security.MessageDigest;
+import java.security.PrivateKey;
 import java.security.Signature;
 import java.security.SignatureException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
+import java.security.interfaces.ECPrivateKey;
 import java.util.List;
 import java.util.Map;
 
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
 
-import org.bouncycastle.jce.ECNamedCurveTable;
-import org.bouncycastle.jce.interfaces.ECPublicKey;
-import org.bouncycastle.jce.spec.ECNamedCurveParameterSpec;
+import org.bouncycastle.asn1.ASN1Encodable;
+import org.bouncycastle.asn1.ASN1Integer;
+import org.bouncycastle.asn1.ASN1Sequence;
+import org.bouncycastle.asn1.DERSequence;
 
 import com.amazonaws.encryptionsdk.CryptoAlgorithm;
-import com.amazonaws.encryptionsdk.DataKey;
 import com.amazonaws.encryptionsdk.MasterKey;
 import com.amazonaws.encryptionsdk.exception.AwsCryptoException;
 import com.amazonaws.encryptionsdk.exception.BadCiphertextException;
@@ -44,8 +40,8 @@ import com.amazonaws.encryptionsdk.model.CiphertextFooters;
 import com.amazonaws.encryptionsdk.model.CiphertextHeaders;
 import com.amazonaws.encryptionsdk.model.CiphertextType;
 import com.amazonaws.encryptionsdk.model.ContentType;
+import com.amazonaws.encryptionsdk.model.EncryptionMaterials;
 import com.amazonaws.encryptionsdk.model.KeyBlob;
-import com.amazonaws.util.Base64;
 
 /**
  * This class implements the CryptoHandler interface by providing methods for the encryption of
@@ -55,21 +51,20 @@ import com.amazonaws.util.Base64;
  * This class creates the ciphertext headers and delegates the encryption of the plaintext to the
  * {@link BlockEncryptionHandler} or {@link FrameEncryptionHandler} based on the content type.
  */
-public class EncryptionHandler<K extends MasterKey<K>> implements MessageCryptoHandler<K> {
-    private static final SecureRandom RND = new SecureRandom();
+public class EncryptionHandler implements MessageCryptoHandler {
     private static final CiphertextType CIPHERTEXT_TYPE = CiphertextType.CUSTOMER_AUTHENTICATED_ENCRYPTED_DATA;
 
+    private final EncryptionMaterials encryptionMaterials_;
     private final Map<String, String> encryptionContext_;
     private final CryptoAlgorithm cryptoAlgo_;
-    private final DataKey<K> dataKey_;
-    private final List<K> masterKeys_;
+    private final List<MasterKey> masterKeys_;
     private final List<KeyBlob> keyBlobs_;
     private final SecretKey encryptionKey_;
     private final byte version_;
     private final CiphertextType type_;
     private final byte nonceLen_;
-    private final byte[] messageId_;
-    private final KeyPair trailingKeys_;
+    private final PrivateKey trailingSignaturePrivateKey_;
+    private final MessageDigest trailingDigest_;
     private final Signature trailingSig_;
 
     private final CiphertextHeaders ciphertextHeaders_;
@@ -79,42 +74,41 @@ public class EncryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
     private boolean firstOperation_ = true;
     private boolean complete_ = false;
 
+    private long plaintextBytes_ = 0;
+    private long plaintextByteLimit_ = -1;
+
     /**
      * Create an encryption handler using the provided master key and encryption context.
-     * 
-     * @param masterKeys
-     *            the master keys to use.
-     * @param encryptionContext
-     *            the encryption context to use.
-     * @param cryptoAlgorithm
-     *            the cryptography algorithm to use for encryption
-     * @param frameSize
-     *            the size of the frames to use in storing encrypted content
+     *
+     * @param frameSize The encryption frame size, or zero for a one-shot encryption task
+     * @param result The EncryptionMaterials with the crypto materials for this encryption job
      * @throws AwsCryptoException
      *             if the encryption context or master key is null.
      */
-    public EncryptionHandler(final List<K> masterKeys, final Map<String, String> encryptionContext,
-            final CryptoAlgorithm cryptoAlgorithm, final int frameSize) throws AwsCryptoException {
+    public EncryptionHandler(int frameSize, EncryptionMaterials result) throws AwsCryptoException {
+        this.encryptionMaterials_ = result;
+        this.encryptionContext_ = result.getEncryptionContext();
+        this.cryptoAlgo_ = result.getAlgorithm();
+        this.masterKeys_ = result.getMasterKeys();
+        this.keyBlobs_ = result.getEncryptedDataKeys();
+        this.trailingSignaturePrivateKey_ = result.getTrailingSignatureKey();
 
-        assertNonNull(masterKeys, "customerMasterKey");
-
-        cryptoAlgo_ = assertNonNull(cryptoAlgorithm, "cryptoAlgorithm");
-        encryptionContext_ = new HashMap<>(assertNonNull(encryptionContext, "encryptionContext"));
-        if (cryptoAlgo_.getTrailingSignatureLength() > 0) {
+        if (keyBlobs_.isEmpty()) {
+            throw new IllegalArgumentException("No encrypted data keys in materials result");
+        }
+        
+        if (trailingSignaturePrivateKey_ != null) {
             try {
-                trailingKeys_ = generateTrailingSigKeyPair();
-                if (encryptionContext_.containsKey(Constants.EC_PUBLIC_KEY_FIELD)) {
-                    throw new IllegalArgumentException("EncryptionContext contains reserved field "
-                            + Constants.EC_PUBLIC_KEY_FIELD);
-                }
-                encryptionContext_.put(Constants.EC_PUBLIC_KEY_FIELD, serializeTrailingKeyForEc());
-                trailingSig_ = Signature.getInstance(cryptoAlgo_.getTrailingSignatureAlgo());
-                trailingSig_.initSign(trailingKeys_.getPrivate(), RND);
+                TrailingSignatureAlgorithm algorithm = TrailingSignatureAlgorithm.forCryptoAlgorithm(cryptoAlgo_);
+                trailingDigest_ = MessageDigest.getInstance(algorithm.getMessageDigestAlgorithm());
+                trailingSig_ = Signature.getInstance(algorithm.getRawSignatureAlgorithm());
+
+                trailingSig_.initSign(trailingSignaturePrivateKey_, Utils.getSecureRandom());
             } catch (final GeneralSecurityException ex) {
                 throw new AwsCryptoException(ex);
             }
         } else {
-            trailingKeys_ = null;
+            trailingDigest_ = null;
             trailingSig_ = null;
         }
 
@@ -123,42 +117,29 @@ public class EncryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
         type_ = CIPHERTEXT_TYPE;
         nonceLen_ = cryptoAlgo_.getNonceLen();
 
-        if (masterKeys.isEmpty()) {
-            throw new IllegalArgumentException("No master keys provided");
-        }
-        masterKeys_ = Collections.unmodifiableList(masterKeys);
-        dataKey_ = masterKeys.get(0).generateDataKey(cryptoAlgorithm, encryptionContext_);
-
-        keyBlobs_ = new ArrayList<>(masterKeys.size());
-        keyBlobs_.add(new KeyBlob(dataKey_));
-        for (int x = 1; x < masterKeys.size(); x++) {
-            keyBlobs_.add(new KeyBlob(masterKeys.get(x)
-                    .encryptDataKey(cryptoAlgo_, encryptionContext_, dataKey_)));
-        }
-
         ContentType contentType;
         if (frameSize > 0) {
             contentType = ContentType.FRAME;
         } else if (frameSize == 0) {
             contentType = ContentType.SINGLEBLOCK;
         } else {
-            throw new AwsCryptoException("Frame size cannot be negative");
+            throw Utils.cannotBeNegative("Frame size");
         }
 
         final CiphertextHeaders unsignedHeaders = createCiphertextHeaders(contentType, frameSize);
         try {
-            encryptionKey_ = cryptoAlgo_.getEncryptionKeyFromDataKey(dataKey_.getKey(), unsignedHeaders);
+            encryptionKey_ = cryptoAlgo_.getEncryptionKeyFromDataKey(result.getCleartextDataKey(), unsignedHeaders);
         } catch (final InvalidKeyException ex) {
             throw new AwsCryptoException(ex);
         }
         ciphertextHeaders_ = signCiphertextHeaders(unsignedHeaders);
         ciphertextHeaderBytes_ = ciphertextHeaders_.toByteArray();
-        messageId_ = ciphertextHeaders_.getMessageId();
+        byte[] messageId_ = ciphertextHeaders_.getMessageId();
 
         switch (contentType) {
             case FRAME:
                 contentCryptoHandler_ = new FrameEncryptionHandler(encryptionKey_, nonceLen_, cryptoAlgo_, messageId_,
-                        frameSize);
+                                                                   frameSize);
                 break;
             case SINGLEBLOCK:
                 contentCryptoHandler_ = new BlockEncryptionHandler(encryptionKey_, nonceLen_, cryptoAlgo_, messageId_);
@@ -206,6 +187,8 @@ public class EncryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
                     "Invalid values for input offset: %d and length: %d", off, len));
         }
 
+        checkPlaintextSizeLimit(len);
+
         int actualOutLen = 0;
 
         if (firstOperation_ == true) {
@@ -219,6 +202,7 @@ public class EncryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
                 contentCryptoHandler_.processBytes(in, off, len, out, outOff + actualOutLen);
         actualOutLen += contentOut.getBytesWritten();
         updateTrailingSignature(out, outOff, actualOutLen);
+        plaintextBytes_ += contentOut.getBytesProcessed();
         return new ProcessingSummary(actualOutLen, contentOut.getBytesProcessed());
     }
 
@@ -235,12 +219,19 @@ public class EncryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
      */
     @Override
     public int doFinal(final byte[] out, final int outOff) throws BadCiphertextException {
+        if (complete_) {
+            throw new IllegalStateException("Attempted to call doFinal twice");
+        }
+
         complete_ = true;
+
+        checkPlaintextSizeLimit(0);
+
         int written = contentCryptoHandler_.doFinal(out, outOff);
         updateTrailingSignature(out, outOff, written);
         if (cryptoAlgo_.getTrailingSignatureLength() > 0) {
             try {
-                CiphertextFooters footer = new CiphertextFooters(trailingSig_.sign());
+                CiphertextFooters footer = new CiphertextFooters(signContent());
                 byte[] fBytes = footer.toByteArray();
                 System.arraycopy(fBytes, 0, out, outOff + written, fBytes.length);
                 return written + fBytes.length;
@@ -250,6 +241,43 @@ public class EncryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
         } else {
             return written;
         }
+    }
+
+    private byte[] signContent() throws SignatureException {
+        if (trailingDigest_ != null) {
+            if (!trailingSig_.getAlgorithm().contains("ECDSA")) {
+                throw new UnsupportedOperationException("Signatures calculated in pieces is only supported for ECDSA.");
+            }
+            final byte[] digest = trailingDigest_.digest();
+            return generateEcdsaFixedLengthSignature(digest);
+        }
+        return trailingSig_.sign();
+    }
+
+    private byte[] generateEcdsaFixedLengthSignature(final byte[] digest) throws SignatureException {
+        byte[] signature;
+        // Unfortunately, we need deterministic lengths some signatures are non-deterministic in length.
+        // So, retry until we get the right length :-(
+        do {
+            trailingSig_.update(digest);
+            signature = trailingSig_.sign();
+            if (signature.length != cryptoAlgo_.getTrailingSignatureLength()) {
+                // Most of the time, a signature of the wrong length can be fixed
+                // be negating s in the signature relative to the group order.
+                ASN1Sequence seq = ASN1Sequence.getInstance(signature);
+                ASN1Integer r = (ASN1Integer) seq.getObjectAt(0);
+                ASN1Integer s = (ASN1Integer) seq.getObjectAt(1);
+                ECPrivateKey ecKey = (ECPrivateKey) trailingSignaturePrivateKey_;
+                s = new ASN1Integer(ecKey.getParams().getOrder().subtract(s.getPositiveValue()));
+                seq = new DERSequence(new ASN1Encodable[]{r, s});
+                try {
+                    signature = seq.getEncoded();
+                } catch (IOException ex) {
+                    throw new SignatureException(ex);
+                }
+            }
+        } while (signature.length != cryptoAlgo_.getTrailingSignatureLength());
+        return signature;
     }
 
     /**
@@ -276,6 +304,22 @@ public class EncryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
         return outSize;
     }
 
+    @Override
+    public int estimatePartialOutputSize(int inLen) {
+        int outSize = 0;
+        if (firstOperation_ == true) {
+            outSize += ciphertextHeaderBytes_.length;
+        }
+        outSize += contentCryptoHandler_.estimatePartialOutputSize(inLen);
+
+        return outSize;
+    }
+
+    @Override
+    public int estimateFinalOutputSize() {
+        return estimateOutputSize(0);
+    }
+
     /**
      * Return the encryption context.
      * 
@@ -291,26 +335,42 @@ public class EncryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
         return ciphertextHeaders_;
     }
 
+    @Override
+    public void setMaxInputLength(long size) {
+        if (size < 0) {
+            throw Utils.cannotBeNegative("Max input length");
+        }
+
+        if (plaintextByteLimit_ == -1 || plaintextByteLimit_ > size) {
+            plaintextByteLimit_ = size;
+        }
+
+        // check that we haven't already exceeded the limit
+        checkPlaintextSizeLimit(0);
+    }
+
+    private void checkPlaintextSizeLimit(long additionalBytes) {
+        if (plaintextByteLimit_ != -1 && plaintextBytes_ + additionalBytes > plaintextByteLimit_) {
+            throw new IllegalStateException("Plaintext size exceeds max input size limit");
+        }
+    }
+
     /**
      * Compute the MAC tag of the header bytes using the provided key, nonce, AAD, and crypto
      * algorithm identifier.
-     * 
-     * @param key
-     *            the key to use in computing the MAC tag.
+     *
      * @param nonce
      *            the nonce to use in computing the MAC tag.
      * @param aad
      *            the AAD to use in computing the MAC tag.
-     * @param cryptoAlgo
-     *            the crypto algorithm to use for computing the MAC tag.
      * @return the bytes containing the computed MAC tag.
      */
     private byte[] computeHeaderTag(final byte[] nonce, final byte[] aad) {
-        final CipherHandler cipherHandler = new CipherHandler(encryptionKey_, nonce, aad,
+        final CipherHandler cipherHandler = new CipherHandler(encryptionKey_,
                 Cipher.ENCRYPT_MODE,
                 cryptoAlgo_);
 
-        return cipherHandler.cipherData(new byte[0], 0, 0);
+        return cipherHandler.cipherData(nonce, aad, new byte[0], 0, 0);
     }
 
     /**
@@ -326,7 +386,7 @@ public class EncryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
     private CiphertextHeaders createCiphertextHeaders(final ContentType contentType, final int frameSize) {
         // create the ciphertext headers
         final byte[] headerNonce = new byte[nonceLen_];
-        RND.nextBytes(headerNonce);
+        // We use a deterministic IV of zero for the header authentication.
 
         final byte[] encryptionContextBytes = EncryptionContextSerializer.serialize(encryptionContext_);
         final CiphertextHeaders ciphertextHeaders = new CiphertextHeaders(version_, type_, cryptoAlgo_,
@@ -346,42 +406,15 @@ public class EncryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
     }
 
     @Override
-    public List<K> getMasterKeys() {
-        return masterKeys_; // This is unmodifiable
-    }
-
-    private KeyPair generateTrailingSigKeyPair() throws GeneralSecurityException {
-        final ECNamedCurveParameterSpec ecSpec;
-        switch (cryptoAlgo_) {
-            case ALG_AES_128_GCM_IV12_TAG16_HKDF_SHA256_ECDSA_P256:
-                ecSpec = ECNamedCurveTable.getParameterSpec("secp256r1");
-                break;
-            case ALG_AES_192_GCM_IV12_TAG16_HKDF_SHA384_ECDSA_P384:
-            case ALG_AES_256_GCM_IV12_TAG16_HKDF_SHA384_ECDSA_P384:
-                ecSpec = ECNamedCurveTable.getParameterSpec("secp384r1");
-                break;
-            default:
-                throw new IllegalStateException("Algorithm does not support trailing signature");
-        }
-        KeyPairGenerator keyGen = KeyPairGenerator.getInstance("ECDSA", "BC");
-        keyGen.initialize(ecSpec, RND);
-        return keyGen.generateKeyPair();
-    }
-
-    private String serializeTrailingKeyForEc() {
-        switch (cryptoAlgo_) {
-            case ALG_AES_128_GCM_IV12_TAG16_HKDF_SHA256_ECDSA_P256:
-            case ALG_AES_192_GCM_IV12_TAG16_HKDF_SHA384_ECDSA_P384:
-            case ALG_AES_256_GCM_IV12_TAG16_HKDF_SHA384_ECDSA_P384:
-                ECPublicKey ecPub = (ECPublicKey) trailingKeys_.getPublic();
-                return Base64.encodeAsString(ecPub.getQ().getEncoded(true)); // Compressed format
-            default:
-                throw new IllegalStateException("Algorithm does not support trailing signature");
-        }
+    public List<? extends MasterKey<?>> getMasterKeys() {
+        //noinspection unchecked
+        return (List)masterKeys_; // This is unmodifiable
     }
 
     private void updateTrailingSignature(byte[] input, int offset, int len) {
-        if (trailingSig_ != null) {
+        if (trailingDigest_ != null) {
+            trailingDigest_.update(input, offset, len);
+        } else if (trailingSig_ != null) {
             try {
                 trailingSig_.update(input, offset, len);
             } catch (final SignatureException ex) {

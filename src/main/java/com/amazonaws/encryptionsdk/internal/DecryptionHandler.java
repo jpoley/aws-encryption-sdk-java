@@ -26,26 +26,20 @@ import java.util.Map;
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
 
-import org.bouncycastle.crypto.params.ECDomainParameters;
-import org.bouncycastle.crypto.params.ECPublicKeyParameters;
-import org.bouncycastle.jcajce.provider.asymmetric.ec.BCECPublicKey;
-import org.bouncycastle.jce.ECNamedCurveTable;
-import org.bouncycastle.jce.provider.BouncyCastleProvider;
-import org.bouncycastle.jce.spec.ECNamedCurveParameterSpec;
-import org.bouncycastle.math.ec.ECPoint;
-
 import com.amazonaws.encryptionsdk.CryptoAlgorithm;
+import com.amazonaws.encryptionsdk.CryptoMaterialsManager;
 import com.amazonaws.encryptionsdk.DataKey;
+import com.amazonaws.encryptionsdk.DefaultCryptoMaterialsManager;
 import com.amazonaws.encryptionsdk.MasterKey;
 import com.amazonaws.encryptionsdk.MasterKeyProvider;
 import com.amazonaws.encryptionsdk.exception.AwsCryptoException;
 import com.amazonaws.encryptionsdk.exception.BadCiphertextException;
-import com.amazonaws.encryptionsdk.exception.CannotUnwrapDataKeyException;
 import com.amazonaws.encryptionsdk.model.CiphertextFooters;
 import com.amazonaws.encryptionsdk.model.CiphertextHeaders;
 import com.amazonaws.encryptionsdk.model.CiphertextType;
 import com.amazonaws.encryptionsdk.model.ContentType;
-import com.amazonaws.util.Base64;
+import com.amazonaws.encryptionsdk.model.DecryptionMaterialsRequest;
+import com.amazonaws.encryptionsdk.model.DecryptionMaterials;
 
 /**
  * This class implements the CryptoHandler interface by providing methods for
@@ -58,8 +52,8 @@ import com.amazonaws.util.Base64;
  * {@link BlockDecryptionHandler} or {@link FrameDecryptionHandler} based on the
  * content type parsed in the ciphertext headers.
  */
-public class DecryptionHandler<K extends MasterKey<K>> implements MessageCryptoHandler<K> {
-    private final MasterKeyProvider<K> masterKeyProvider_;
+public class DecryptionHandler<K extends MasterKey<K>> implements MessageCryptoHandler {
+    private final CryptoMaterialsManager materialsManager_;
 
     private final CiphertextHeaders ciphertextHeaders_;
     private final CiphertextFooters ciphertextFooters_;
@@ -70,7 +64,6 @@ public class DecryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
     private DataKey<K> dataKey_;
     private SecretKey decryptionKey_;
     private CryptoAlgorithm cryptoAlgo_;
-    private PublicKey trailingPublicKey_;
     private Signature trailingSig_;
 
     private Map<String, String> encryptionContext_ = null;
@@ -78,34 +71,61 @@ public class DecryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
     private byte[] unparsedBytes_ = new byte[0];
     private boolean complete_ = false;
 
+    private long ciphertextSizeBound_ = -1;
+    private long ciphertextBytesSupplied_ = 0;
+
+    // These ctors are private to ensure type safety - we must ensure construction using a CMM results in a
+    // DecryptionHandler<?>, not a DecryptionHandler<SomeConcreteType>, since the CryptoMaterialsManager is not itself
+    // genericized.
+    private DecryptionHandler(final CryptoMaterialsManager materialsManager) {
+        Utils.assertNonNull(materialsManager, "materialsManager");
+
+        this.materialsManager_ = materialsManager;
+        ciphertextHeaders_ = new CiphertextHeaders();
+        ciphertextFooters_ = new CiphertextFooters();
+    }
+
+    private DecryptionHandler(final CryptoMaterialsManager materialsManager, final CiphertextHeaders headers)
+            throws AwsCryptoException
+    {
+        Utils.assertNonNull(materialsManager, "materialsManager");
+
+        materialsManager_ = materialsManager;
+        ciphertextHeaders_ = headers;
+        ciphertextFooters_ = new CiphertextFooters();
+        readHeaderFields(headers);
+        updateTrailingSignature(headers);
+    }
+
     /**
      * Create a decryption handler using the provided master key.
-     * 
+     *
      * <p>
      * Note the methods in the provided master key are used in decrypting the
      * encrypted data key parsed from the ciphertext headers.
-     * 
+     *
      * @param customerMasterKeyProvider
      *            the master key provider to use in picking a master key from
      *            the key blobs encoded in the provided ciphertext.
      * @throws AwsCryptoException
      *             if the master key is null.
      */
-    public DecryptionHandler(final MasterKeyProvider<K> customerMasterKeyProvider)
-            throws AwsCryptoException {
+    @SuppressWarnings("unchecked")
+    public static <K extends MasterKey<K>> DecryptionHandler<K> create(
+            final MasterKeyProvider<K> customerMasterKeyProvider
+    ) throws AwsCryptoException {
         Utils.assertNonNull(customerMasterKeyProvider, "customerMasterKeyProvider");
-        masterKeyProvider_ = customerMasterKeyProvider;
-        ciphertextHeaders_ = new CiphertextHeaders();
-        ciphertextFooters_ = new CiphertextFooters();
+
+        return (DecryptionHandler<K>)create(new DefaultCryptoMaterialsManager(customerMasterKeyProvider));
     }
 
     /**
      * Create a decryption handler using the provided master key and already parsed {@code headers}.
-     * 
+     *
      * <p>
      * Note the methods in the provided master key are used in decrypting the encrypted data key
      * parsed from the ciphertext headers.
-     * 
+     *
      * @param customerMasterKeyProvider
      *            the master key provider to use in picking a master key from the key blobs encoded
      *            in the provided ciphertext.
@@ -115,14 +135,54 @@ public class DecryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
      * @throws AwsCryptoException
      *             if the master key is null.
      */
-    public DecryptionHandler(final MasterKeyProvider<K> customerMasterKeyProvider, final CiphertextHeaders headers)
-            throws AwsCryptoException {
+    @SuppressWarnings("unchecked")
+    public static <K extends MasterKey<K>> DecryptionHandler<K> create(
+            final MasterKeyProvider<K> customerMasterKeyProvider, final CiphertextHeaders headers
+    ) throws AwsCryptoException {
         Utils.assertNonNull(customerMasterKeyProvider, "customerMasterKeyProvider");
-        masterKeyProvider_ = customerMasterKeyProvider;
-        ciphertextHeaders_ = headers;
-        ciphertextFooters_ = new CiphertextFooters();
-        readHeaderFields(headers);
-        updateTrailingSignature(headers);
+
+        return (DecryptionHandler<K>) create(new DefaultCryptoMaterialsManager(customerMasterKeyProvider), headers);
+    }
+
+    /**
+     * Create a decryption handler using the provided materials manager.
+     *
+     * <p>
+     * Note the methods in the provided materials manager are used in decrypting the encrypted data key
+     * parsed from the ciphertext headers.
+     *
+     * @param materialsManager
+     *            the materials manager to use in decrypting the data key from the key blobs encoded
+     *            in the provided ciphertext.
+     * @throws AwsCryptoException
+     *             if the master key is null.
+     */
+    public static DecryptionHandler<?> create(
+            final CryptoMaterialsManager materialsManager
+    ) throws AwsCryptoException {
+        return new DecryptionHandler(materialsManager);
+    }
+
+    /**
+     * Create a decryption handler using the provided materials manager and already parsed {@code headers}.
+     *
+     * <p>
+     * Note the methods in the provided materials manager are used in decrypting the encrypted data key
+     * parsed from the ciphertext headers.
+     *
+     * @param materialsManager
+     *            the materials manager to use in decrypting the data key from the key blobs encoded
+     *            in the provided ciphertext.
+     * @param headers
+     *            already parsed headers which will not be passed into
+     *            {@link #processBytes(byte[], int, int, byte[], int)}
+     * @throws AwsCryptoException
+     *             if the master key is null.
+     */
+    public static DecryptionHandler<?> create(
+            final CryptoMaterialsManager materialsManager, final CiphertextHeaders headers
+    ) throws AwsCryptoException {
+        return new DecryptionHandler(materialsManager, headers);
     }
 
     /**
@@ -157,6 +217,7 @@ public class DecryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
     public ProcessingSummary processBytes(final byte[] in, final int off, final int len, final byte[] out,
             final int outOff)
             throws BadCiphertextException, AwsCryptoException {
+
         if (len < 0 || off < 0) {
             throw new AwsCryptoException(String.format(
                     "Invalid values for input offset: %d and length: %d", off, len));
@@ -173,6 +234,9 @@ public class DecryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
                     "Size of the total bytes to parse and decrypt exceeded allowed maximum:" + Integer.MAX_VALUE);
         }
 
+        checkSizeBound(len);
+        ciphertextBytesSupplied_ += len;
+
         final byte[] bytesToParse = new byte[(int) totalBytesToParse];
         final int leftoverBytes = unparsedBytes_.length;
         // If there were previously unparsed bytes, add them as the first
@@ -188,7 +252,6 @@ public class DecryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
             if (ciphertextHeaders_.isComplete() == true) {
                 readHeaderFields(ciphertextHeaders_);
                 updateTrailingSignature(ciphertextHeaders_);
-                ciphertextHeadersParsed_ = true;
                 // reset unparsed bytes as parsing of ciphertext headers is
                 // complete.
                 unparsedBytes_ = new byte[0];
@@ -212,25 +275,32 @@ public class DecryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
                 updateTrailingSignature(bytesToParse, totalParsedBytes, contentResult.getBytesProcessed());
                 actualOutLen = contentResult.getBytesWritten();
                 totalParsedBytes += contentResult.getBytesProcessed();
+                
             }
             if (contentCryptoHandler_.isComplete()) {
                 actualOutLen += contentCryptoHandler_.doFinal(out, outOff + actualOutLen);
             }
         }
-        if (contentCryptoHandler_.isComplete()) {
-            totalParsedBytes += ciphertextFooters_.deserialize(bytesToParse, totalParsedBytes);
-            if (ciphertextFooters_.isComplete() && trailingSig_ != null) {
-                try {
-                    if (!trailingSig_.verify(ciphertextFooters_.getMAuth())) {
-                        throw new BadCiphertextException("Bad trailing signature");
+
+        if (contentCryptoHandler_.isComplete() ) {
+            // If the crypto algorithm contains trailing signature, we will need to verify
+            // the footer of the message.
+            if (cryptoAlgo_.getTrailingSignatureLength() > 0) {
+                totalParsedBytes += ciphertextFooters_.deserialize(bytesToParse, totalParsedBytes);
+                if (ciphertextFooters_.isComplete() && trailingSig_ != null) {
+                    try {
+                        if (!trailingSig_.verify(ciphertextFooters_.getMAuth())) {
+                            throw new BadCiphertextException("Bad trailing signature");
+                        }
+                    } catch (final SignatureException ex) {
+                        throw new BadCiphertextException("Bad trailing signature", ex);
                     }
                     complete_ = true;
-                } catch (final SignatureException ex) {
-                    throw new BadCiphertextException("Bad trailing signature", ex);
                 }
+            } else {
+                complete_ = true;
             }
         }
-        
         return new ProcessingSummary(actualOutLen, totalParsedBytes - leftoverBytes);
     }
 
@@ -280,6 +350,24 @@ public class DecryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
         }
     }
 
+    @Override
+    public int estimatePartialOutputSize(int inLen) {
+        if (contentCryptoHandler_ != null) {
+            return contentCryptoHandler_.estimatePartialOutputSize(inLen);
+        } else {
+            return (inLen > 0) ? inLen : 0;
+        }
+    }
+
+    @Override
+    public int estimateFinalOutputSize() {
+        if (contentCryptoHandler_ != null) {
+            return contentCryptoHandler_.estimateFinalOutputSize();
+        } else {
+            return 0;
+        }
+    }
+
     /**
      * Return the encryption context. This value is parsed from the ciphertext.
      * 
@@ -289,6 +377,26 @@ public class DecryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
     @Override
     public Map<String, String> getEncryptionContext() {
         return encryptionContext_;
+    }
+
+    private void checkSizeBound(long additionalBytes) {
+        if (ciphertextSizeBound_ != -1 && ciphertextBytesSupplied_ + additionalBytes > ciphertextSizeBound_) {
+            throw new IllegalStateException("Ciphertext size exceeds size bound");
+        }
+    }
+
+    @Override
+    public void setMaxInputLength(long size) {
+        if (size < 0) {
+            throw Utils.cannotBeNegative("Max input length");
+        }
+
+        if (ciphertextSizeBound_ != -1 && ciphertextSizeBound_ < size) {
+            ciphertextSizeBound_ = size;
+        }
+
+        // check that we haven't already exceeded the limit
+        checkSizeBound(0);
     }
 
     /**
@@ -302,40 +410,16 @@ public class DecryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
      *         true if the integrity of the header is intact; false otherwise.
      */
     private void verifyHeaderIntegrity(final CiphertextHeaders ciphertextHeaders) throws BadCiphertextException {
-        final CipherHandler cipherHandler = new CipherHandler(decryptionKey_, ciphertextHeaders.getHeaderNonce(),
-                ciphertextHeaders.serializeAuthenticatedFields(), Cipher.DECRYPT_MODE, cryptoAlgo_);
+        final CipherHandler cipherHandler = new CipherHandler(decryptionKey_, Cipher.DECRYPT_MODE, cryptoAlgo_);
 
         try {
             final byte[] headerTag = ciphertextHeaders.getHeaderTag();
-            cipherHandler.cipherData(headerTag, 0, headerTag.length);
+            cipherHandler.cipherData(ciphertextHeaders.getHeaderNonce(),
+                                     ciphertextHeaders.serializeAuthenticatedFields(),
+                                     headerTag, 0, headerTag.length);
         } catch (BadCiphertextException e) {
             throw new BadCiphertextException("Header integrity check failed.", e);
         }
-    }
-
-    /**
-     * Retrieve the data key from the ciphertext headers. This method calls the
-     * decryptDataKey() method of the customer master key to decrypt the
-     * encrypted bytes of the data key read from the ciphertext headers.
-     * 
-     * @param ciphertextHeaders
-     *            the ciphertext headers object from where the encrypted data
-     *            key is to be read.
-     * @return
-     *         the data key object containing the key in cleartext and encrypted
-     *         form.
-     */
-    private DataKey<K> getDataKey(final CiphertextHeaders ciphertextHeaders) {
-        final DataKey<K> result = masterKeyProvider_.decryptDataKey(
-                cryptoAlgo_,
-                ciphertextHeaders.getEncryptedKeyBlobs(),
-                ciphertextHeaders.getEncryptionContextMap());
-
-        if (result == null) {
-            throw new CannotUnwrapDataKeyException("Could not decrypt any data keys");
-        }
-
-        return result;
     }
 
     /**
@@ -361,16 +445,45 @@ public class DecryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
         final byte[] messageId = ciphertextHeaders.getMessageId();
 
         encryptionContext_ = ciphertextHeaders.getEncryptionContextMap();
+
+        DecryptionMaterialsRequest request = DecryptionMaterialsRequest.newBuilder()
+                                                                       .setAlgorithm(cryptoAlgo_)
+                                                                       .setEncryptionContext(encryptionContext_)
+                                                                       .setEncryptedDataKeys(ciphertextHeaders.getEncryptedKeyBlobs())
+                                                                       .build();
+
+        DecryptionMaterials result = materialsManager_.decryptMaterials(request);
+
+        //noinspection unchecked
+        dataKey_ = (DataKey<K>)result.getDataKey();
+        PublicKey trailingPublicKey = result.getTrailingSignatureKey();
+
+        try {
+            decryptionKey_ = cryptoAlgo_.getEncryptionKeyFromDataKey(dataKey_.getKey(), ciphertextHeaders);
+        } catch (final InvalidKeyException ex) {
+            throw new AwsCryptoException(ex);
+        }
+
         if (cryptoAlgo_.getTrailingSignatureLength() > 0) {
+            Utils.assertNonNull(trailingPublicKey, "trailing public key");
+
+            TrailingSignatureAlgorithm trailingSignatureAlgorithm
+                    = TrailingSignatureAlgorithm.forCryptoAlgorithm(cryptoAlgo_);
+
             try {
-                trailingPublicKey_ = deserializeTrailingKeyFromEc(encryptionContext_.get(Constants.EC_PUBLIC_KEY_FIELD));
-                trailingSig_ = Signature.getInstance(cryptoAlgo_.getTrailingSignatureAlgo(), "BC");
-                trailingSig_.initVerify(trailingPublicKey_);
-            } catch (final GeneralSecurityException ex) {
-                throw new AwsCryptoException(ex);
+                trailingSig_ = Signature.getInstance(
+                        trailingSignatureAlgorithm.getHashAndSignAlgorithm()
+                );
+
+                trailingSig_.initVerify(trailingPublicKey);
+            } catch (GeneralSecurityException e) {
+                throw new AwsCryptoException(e);
             }
         } else {
-            trailingPublicKey_ = null;
+            if (trailingPublicKey != null) {
+                throw new AwsCryptoException("Unexpected trailing signature key in context");
+            }
+
             trailingSig_ = null;
         }
 
@@ -378,13 +491,6 @@ public class DecryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
 
         final short nonceLen = ciphertextHeaders.getNonceLength();
         final int frameLen = ciphertextHeaders.getFrameLength();
-
-        dataKey_ = getDataKey(ciphertextHeaders);
-        try {
-            decryptionKey_ = cryptoAlgo_.getEncryptionKeyFromDataKey(dataKey_.getKey(), ciphertextHeaders);
-        } catch (final InvalidKeyException ex) {
-            throw new AwsCryptoException(ex);
-        }
 
         verifyHeaderIntegrity(ciphertextHeaders);
 
@@ -402,31 +508,13 @@ public class DecryptionHandler<K extends MasterKey<K>> implements MessageCryptoH
                 // detected when parsing.
                 break;
         }
-    }
 
-    private PublicKey deserializeTrailingKeyFromEc(final String pubKey) throws GeneralSecurityException {
-        final ECNamedCurveParameterSpec ecSpec;
-        
-        switch (cryptoAlgo_) {
-            case ALG_AES_128_GCM_IV12_TAG16_HKDF_SHA256_ECDSA_P256:
-                ecSpec = ECNamedCurveTable.getParameterSpec("secp256r1");
-                break;
-            case ALG_AES_192_GCM_IV12_TAG16_HKDF_SHA384_ECDSA_P384:
-            case ALG_AES_256_GCM_IV12_TAG16_HKDF_SHA384_ECDSA_P384:
-                ecSpec = ECNamedCurveTable.getParameterSpec("secp384r1");
-                break;
-            default:
-                throw new IllegalStateException("Algorithm does not support trailing signature");
-        }
-        final ECPoint q = ecSpec.getCurve().decodePoint(Base64.decode(pubKey));
-        ECPublicKeyParameters keyParams = new ECPublicKeyParameters(q, new ECDomainParameters(ecSpec.getCurve(),
-                ecSpec.getG(), ecSpec.getN(), ecSpec.getH()));
-        return new BCECPublicKey("ECDSA", keyParams, ecSpec, BouncyCastleProvider.CONFIGURATION);
+        ciphertextHeadersParsed_ = true;
     }
 
     private void updateTrailingSignature(final CiphertextHeaders headers) {
         if (trailingSig_ != null) {
-            final byte[] reserializedHeaders = ciphertextHeaders_.toByteArray();
+            final byte[] reserializedHeaders = headers.toByteArray();
             updateTrailingSignature(reserializedHeaders, 0, reserializedHeaders.length);
         }
     }

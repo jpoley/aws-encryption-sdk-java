@@ -17,12 +17,17 @@ package com.amazonaws.encryptionsdk.exception;
  * This exception is thrown when there are not enough bytes to parse a primitive, a specified number
  * of bytes, or the bytes does not properly represent the desired object.
  */
+//@ non_null_by_default
 public class ParseException extends AwsCryptoException {
     private static final long serialVersionUID = -1L;
 
     /**
      * Constructs a new exception with no detail message.
      */
+    /*@ public normal_behavior
+      @   ensures standardThrowable();
+      @*/
+    //@ pure
     public ParseException() {
         super();
     }
@@ -33,6 +38,10 @@ public class ParseException extends AwsCryptoException {
      * @param message
      *            the detail message.
      */
+    /*@ public normal_behavior
+      @   ensures standardThrowable(message);
+      @*/
+    //@ pure
     public ParseException(final String message) {
         super(message);
     }
@@ -47,6 +56,10 @@ public class ParseException extends AwsCryptoException {
      *            method). (A <tt>null</tt> value is permitted, and indicates that the cause is
      *            nonexistent or unknown.)
      */
+    /*@ public normal_behavior
+      @   ensures standardThrowable(cause);
+      @*/
+    //@ pure
     public ParseException(final Throwable cause) {
         super(cause);
     }
@@ -67,6 +80,10 @@ public class ParseException extends AwsCryptoException {
      *            method). (A <tt>null</tt> value is permitted, and indicates that the cause is
      *            nonexistent or unknown.)
      */
+    /*@ public normal_behavior
+      @   ensures standardThrowable(message,cause);
+      @*/
+    //@ pure
     public ParseException(final String message, final Throwable cause) {
         super(message, cause);
     }

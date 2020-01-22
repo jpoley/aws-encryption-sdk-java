@@ -13,15 +13,15 @@
 
 package com.amazonaws.encryptionsdk.kms;
 
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-
-import javax.crypto.SecretKey;
-import javax.crypto.spec.SecretKeySpec;
+import java.util.function.Supplier;
 
 import com.amazonaws.AmazonServiceException;
 import com.amazonaws.AmazonWebServiceRequest;
@@ -36,7 +36,7 @@ import com.amazonaws.encryptionsdk.MasterKeyProvider;
 import com.amazonaws.encryptionsdk.exception.AwsCryptoException;
 import com.amazonaws.encryptionsdk.exception.UnsupportedProviderException;
 import com.amazonaws.encryptionsdk.internal.VersionInfo;
-import com.amazonaws.services.kms.AWSKMSClient;
+import com.amazonaws.services.kms.AWSKMS;
 import com.amazonaws.services.kms.model.DecryptRequest;
 import com.amazonaws.services.kms.model.DecryptResult;
 import com.amazonaws.services.kms.model.EncryptRequest;
@@ -49,31 +49,41 @@ import com.amazonaws.services.kms.model.GenerateDataKeyResult;
  * {@link AwsCrypto}.
  */
 public final class KmsMasterKey extends MasterKey<KmsMasterKey> implements KmsMethods {
-    private final AWSKMSClient kms_;
+    private final Supplier<AWSKMS> kms_;
     private final MasterKeyProvider<KmsMasterKey> sourceProvider_;
     private final String id_;
     private final List<String> grantTokens_ = new ArrayList<>();
 
+    private <T extends AmazonWebServiceRequest> T updateUserAgent(T request) {
+        request.getRequestClientOptions().appendUserAgent(VersionInfo.USER_AGENT);
+
+        return request;
+    }
+
+    /**
+     *
+     * @deprecated Use a {@link KmsMasterKeyProvider} to obtain {@link KmsMasterKey}s.
+     */
+    @Deprecated
     public static KmsMasterKey getInstance(final AWSCredentials creds, final String keyId) {
         return new KmsMasterKeyProvider(creds, keyId).getMasterKey(keyId);
     }
 
+    /**
+     *
+     * @deprecated Use a {@link KmsMasterKeyProvider} to obtain {@link KmsMasterKey}s.
+     */
+    @Deprecated
     public static KmsMasterKey getInstance(final AWSCredentialsProvider creds, final String keyId) {
         return new KmsMasterKeyProvider(creds, keyId).getMasterKey(keyId);
     }
 
-    static KmsMasterKey getInstance(final AWSKMSClient kms, final String id,
+    static KmsMasterKey getInstance(final Supplier<AWSKMS> kms, final String id,
             final MasterKeyProvider<KmsMasterKey> provider) {
         return new KmsMasterKey(kms, id, provider);
     }
 
-    private KmsMasterKey(final AWSKMSClient kms, final String id) {
-        kms_ = kms;
-        id_ = id;
-        sourceProvider_ = this;
-    }
-
-    private KmsMasterKey(final AWSKMSClient kms, final String id, final MasterKeyProvider<KmsMasterKey> provider) {
+    private KmsMasterKey(final Supplier<AWSKMS> kms, final String id, final MasterKeyProvider<KmsMasterKey> provider) {
         kms_ = kms;
         id_ = id;
         sourceProvider_ = provider;
@@ -92,13 +102,13 @@ public final class KmsMasterKey extends MasterKey<KmsMasterKey> implements KmsMe
     @Override
     public DataKey<KmsMasterKey> generateDataKey(final CryptoAlgorithm algorithm,
             final Map<String, String> encryptionContext) {
-        final GenerateDataKeyResult gdkResult = kms_.generateDataKey(appendUserAgent(
+        final GenerateDataKeyResult gdkResult = kms_.get().generateDataKey(updateUserAgent(
                 new GenerateDataKeyRequest()
                         .withKeyId(getKeyId())
                         .withNumberOfBytes(algorithm.getDataKeyLength())
                         .withEncryptionContext(encryptionContext)
-                        .withGrantTokens(grantTokens_))
-                );
+                        .withGrantTokens(grantTokens_)
+        ));
         final byte[] rawKey = new byte[algorithm.getDataKeyLength()];
         gdkResult.getPlaintext().get(rawKey);
         if (gdkResult.getPlaintext().remaining() > 0) {
@@ -136,7 +146,7 @@ public final class KmsMasterKey extends MasterKey<KmsMasterKey> implements KmsMe
             throw new IllegalArgumentException("Only RAW encoded keys are supported");
         }
         try {
-            final EncryptResult encryptResult = kms_.encrypt(appendUserAgent(
+            final EncryptResult encryptResult = kms_.get().encrypt(updateUserAgent(
                     new EncryptRequest()
                             .withKeyId(id_)
                             .withPlaintext(ByteBuffer.wrap(key.getEncoded()))
@@ -158,7 +168,7 @@ public final class KmsMasterKey extends MasterKey<KmsMasterKey> implements KmsMe
         final List<Exception> exceptions = new ArrayList<>();
         for (final EncryptedDataKey edk : encryptedDataKeys) {
             try {
-                final DecryptResult decryptResult = kms_.decrypt(appendUserAgent(
+                final DecryptResult decryptResult = kms_.get().decrypt(updateUserAgent(
                         new DecryptRequest()
                                 .withCiphertextBlob(ByteBuffer.wrap(edk.getEncryptedDataKey()))
                                 .withEncryptionContext(encryptionContext)
@@ -180,10 +190,5 @@ public final class KmsMasterKey extends MasterKey<KmsMasterKey> implements KmsMe
         }
 
         throw buildCannotDecryptDksException(exceptions);
-    }
-
-    private static <R extends AmazonWebServiceRequest> R appendUserAgent(final R request) {
-        request.getRequestClientOptions().appendUserAgent(VersionInfo.USER_AGENT);
-        return request;
     }
 }

@@ -14,8 +14,6 @@
 package com.amazonaws.encryptionsdk.internal;
 
 import java.io.ByteArrayOutputStream;
-import java.security.SecureRandom;
-
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
 
@@ -33,7 +31,6 @@ import com.amazonaws.encryptionsdk.model.CipherBlockHeaders;
  * {@link BlockDecryptionHandler}.
  */
 class BlockEncryptionHandler implements CryptoHandler {
-    private static final SecureRandom RND = new SecureRandom();
     private final SecretKey encryptionKey_;
     private final CryptoAlgorithm cryptoAlgo_;
     private final int nonceLen_;
@@ -137,6 +134,16 @@ class BlockEncryptionHandler implements CryptoHandler {
         return outSize;
     }
 
+    @Override
+    public int estimatePartialOutputSize(int inLen) {
+        return 0;
+    }
+
+    @Override
+    public int estimateFinalOutputSize() {
+        return estimateOutputSize(0);
+    }
+
     /**
      * This method encrypts the provided bytes, creates the headers for the
      * block, and assembles the block containing the headers and the encrypted
@@ -171,17 +178,10 @@ class BlockEncryptionHandler implements CryptoHandler {
         final byte[] contentAad = Utils
                 .generateContentAad(messageId_, Constants.SINGLE_BLOCK_STRING_ID, seqNum, len);
 
-        final byte[] nonce = new byte[nonceLen_];
-        RND.nextBytes(nonce);
+        final byte[] nonce = getNonce();
 
-        // create and use a cipherhandler to encrypt data.
-        final CipherHandler cipherHandler = new CipherHandler(
-                encryptionKey_,
-                nonce,
-                contentAad,
-                Cipher.ENCRYPT_MODE,
-                cryptoAlgo_);
-        final byte[] encryptedBytes = cipherHandler.cipherData(input, off, len);
+        final byte[] encryptedBytes = new CipherHandler(encryptionKey_, Cipher.ENCRYPT_MODE, cryptoAlgo_)
+                .cipherData(nonce, contentAad, input, off, len);
 
         // create the cipherblock headers now for the encrypted data
         final int encryptedContentLen = encryptedBytes.length - tagLenBytes_;
@@ -195,6 +195,16 @@ class BlockEncryptionHandler implements CryptoHandler {
         outLen += encryptedBytes.length;
 
         return outLen;
+    }
+
+    private byte[] getNonce() {
+        final byte[] nonce = new byte[nonceLen_];
+
+        // The IV for the non-framed encryption case is generated as if we were encrypting a message with a single
+        // frame.
+        nonce[nonce.length - 1] = 1;
+
+        return nonce;
     }
 
     @Override

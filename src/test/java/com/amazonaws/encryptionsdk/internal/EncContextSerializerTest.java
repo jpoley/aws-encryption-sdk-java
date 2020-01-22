@@ -13,6 +13,7 @@
 
 package com.amazonaws.encryptionsdk.internal;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 
 import java.nio.ByteBuffer;
@@ -42,6 +43,30 @@ public class EncContextSerializerTest {
     @Test
     public void singletonContext() {
         testMap(Collections.singletonMap("Alice:", "trusts Bob"));
+    }
+
+    @Test
+    public void contextOrdering() throws Exception {
+        // Context keys should be sorted by unsigned byte order
+        Map<String, String> map = new HashMap<>();
+
+        map.put("\0", "\0");
+        map.put("\u0081", "\u0081"); // 0xC2 0x81 in UTF8
+
+        assertArrayEquals(
+                new byte[] {
+                        0, 2,
+                        // "\0"
+                        0, 1, (byte)'\0',
+                        // "\0"
+                        0, 1, (byte)'\0',
+                        // "\u0081"
+                        0, 2, (byte)0xC2, (byte)0x81,
+                        // "\u0081"
+                        0, 2, (byte)0xC2, (byte)0x81,
+                        },
+                EncryptionContextSerializer.serialize(map)
+        );
     }
 
     @Test

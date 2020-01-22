@@ -17,6 +17,8 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+
 /**
  * Contains information which {@link MasterKeyProvider}s can use to select which {@link MasterKey}s
  * to use to protect a given plaintext. This class is immutable.
@@ -89,6 +91,7 @@ public final class MasterKeyRequest {
          * Please note that this does not make a defensive copy of the plaintext and so any
          * modifications made to the backing array will be reflected in this Builder.
          */
+        @SuppressFBWarnings("EI_EXPOSE_REP")
         public byte[] getPlaintext() {
             return plaintext_;
         }
@@ -97,6 +100,7 @@ public final class MasterKeyRequest {
          * Please note that this does not make a defensive copy of the plaintext and so any
          * modifications made to the backing array will be reflected in this Builder.
          */
+        @SuppressFBWarnings("EI_EXPOSE_REP")
         public Builder setPlaintext(final byte[] plaintext) {
             if (size_ != -1) {
                 throw new IllegalStateException("The plaintext may only be set if the size has not been explicitly set");

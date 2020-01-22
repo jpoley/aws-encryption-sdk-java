@@ -16,25 +16,41 @@ package com.amazonaws.encryptionsdk.exception;
 /**
  * This is the parent class of the runtime exceptions thrown by the AWS Encryption SDK.
  */
+//@ non_null_by_default
 public class AwsCryptoException extends RuntimeException {
     private static final long serialVersionUID = -1L;
 
+    //@ public normal_behavior
+    //@   ensures standardThrowable();
+    //@ pure
     public AwsCryptoException() {
         super();
     }
 
+    //@ public normal_behavior
+    //@   ensures standardThrowable(message);
+    //@ pure
     public AwsCryptoException(final String message) {
         super(message);
     }
 
+    //@ public normal_behavior
+    //@   ensures standardThrowable(cause);
+    //@ pure
     public AwsCryptoException(final Throwable cause) {
         super(cause);
     }
 
+    //@ public normal_behavior
+    //@   ensures standardThrowable(message,cause);
+    //@ pure
     public AwsCryptoException(final String message, final Throwable cause) {
         super(message, cause);
     }
 
+    //@ public normal_behavior
+    //@   ensures standardThrowable(message,cause);
+    //@ pure  // TODO
     public AwsCryptoException(final String message, final Throwable cause, final boolean enableSuppression,
             final boolean writableStackTrace) {
         super(message, cause, enableSuppression, writableStackTrace);

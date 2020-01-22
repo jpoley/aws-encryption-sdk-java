@@ -19,7 +19,17 @@ import java.util.Map;
 import com.amazonaws.encryptionsdk.MasterKey;
 import com.amazonaws.encryptionsdk.model.CiphertextHeaders;
 
-public interface MessageCryptoHandler<K extends MasterKey<K>> extends CryptoHandler {
+public interface MessageCryptoHandler extends CryptoHandler {
+    /**
+     * Informs this handler of an upper bound on the input data size. The handler will throw an exception if this bound
+     * is exceeded, and may use it to perform performance optimizations as well.
+     *
+     * If this method is called multiple times, the smallest bound will be used.
+     *
+     * @param size An upper bound on the input data size.
+     */
+    void setMaxInputLength(long size);
+
     /**
      * Return the encryption context used in the generation of the data key used for the encryption
      * of content.
@@ -39,5 +49,5 @@ public interface MessageCryptoHandler<K extends MasterKey<K>> extends CryptoHand
      * {@link MasterKey}s used to protect the data. In the decryption flow, it is the single
      * {@link MasterKey} actually used to decrypt the data.
      */
-    List<K> getMasterKeys();
+    List<? extends MasterKey<?>> getMasterKeys();
 }

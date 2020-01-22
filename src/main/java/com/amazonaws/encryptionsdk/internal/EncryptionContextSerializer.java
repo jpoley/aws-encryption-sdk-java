@@ -78,16 +78,16 @@ public class EncryptionContextSerializer {
             encoder.onMalformedInput(CodingErrorAction.REPORT);
             encoder.onUnmappableCharacter(CodingErrorAction.REPORT);
 
-            final SortedMap<ByteBuffer, ByteBuffer> binaryEntries = new TreeMap<>();
+            final SortedMap<ByteBuffer, ByteBuffer> binaryEntries = new TreeMap<>(new Utils.ComparingByteBuffers());
             for (Entry<String, String> mapEntry : encryptionContext.entrySet()) {
                 if (mapEntry.getKey() == null || mapEntry.getValue() == null) {
                     throw new AwsCryptoException(
-                            "All keys and values in excryption context must be non-null.");
+                            "All keys and values in encryption context must be non-null.");
                 }
 
                 if (mapEntry.getKey().isEmpty() || mapEntry.getValue().isEmpty()) {
                     throw new AwsCryptoException(
-                            "All keys and values in excryption context must be non-empty.");
+                            "All keys and values in encryption context must be non-empty.");
                 }
 
                 final ByteBuffer keyBytes = encoder.encode(CharBuffer.wrap(mapEntry.getKey()));
@@ -100,7 +100,7 @@ public class EncryptionContextSerializer {
 
                 if (keyBytes.limit() > Short.MAX_VALUE || valueBytes.limit() > Short.MAX_VALUE) {
                     throw new AwsCryptoException(
-                            "All keys and values in excryption context must be shorter than " + Short.MAX_VALUE);
+                            "All keys and values in encryption context must be shorter than " + Short.MAX_VALUE);
                 }
             }
 
@@ -113,7 +113,7 @@ public class EncryptionContextSerializer {
             }
 
             // get and return the bytes that have been serialized
-            result.flip();
+            Utils.flip(result);
             final byte[] encryptionContextBytes = new byte[result.limit()];
             result.get(encryptionContextBytes);
 
@@ -173,8 +173,8 @@ public class EncryptionContextSerializer {
                 }
 
                 final ByteBuffer keyBytes = encryptionContextBytes.slice();
-                keyBytes.limit(keyLen);
-                encryptionContextBytes.position(encryptionContextBytes.position() + keyLen);
+                Utils.limit(keyBytes, keyLen);
+                Utils.position(encryptionContextBytes, encryptionContextBytes.position() + keyLen);
 
                 final int valueLen = encryptionContextBytes.getShort();
                 if (valueLen <= 0 || valueLen > Short.MAX_VALUE) {
@@ -184,8 +184,8 @@ public class EncryptionContextSerializer {
 
                 // retrieve value
                 final ByteBuffer valueBytes = encryptionContextBytes.slice();
-                valueBytes.limit(valueLen);
-                encryptionContextBytes.position(encryptionContextBytes.position() + valueLen);
+                Utils.limit(valueBytes, valueLen);
+                Utils.position(encryptionContextBytes, encryptionContextBytes.position() + valueLen);
 
                 final CharBuffer keyChars = decoder.decode(keyBytes);
                 final CharBuffer valueChars = decoder.decode(valueBytes);

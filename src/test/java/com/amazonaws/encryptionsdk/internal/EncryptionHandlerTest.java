@@ -13,6 +13,11 @@
 
 package com.amazonaws.encryptionsdk.internal;
 
+import static com.amazonaws.encryptionsdk.TestUtils.assertThrows;
+import static java.util.Collections.emptyList;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -21,48 +26,60 @@ import org.junit.Test;
 
 import com.amazonaws.encryptionsdk.AwsCrypto;
 import com.amazonaws.encryptionsdk.CryptoAlgorithm;
+import com.amazonaws.encryptionsdk.DefaultCryptoMaterialsManager;
 import com.amazonaws.encryptionsdk.exception.AwsCryptoException;
-import com.amazonaws.encryptionsdk.kms.KmsMasterKey;
-import com.amazonaws.encryptionsdk.kms.KmsMasterKeyProvider;
-import com.amazonaws.services.kms.MockKMSClient;
+import com.amazonaws.encryptionsdk.model.EncryptionMaterials;
+import com.amazonaws.encryptionsdk.model.EncryptionMaterialsRequest;
 
 public class EncryptionHandlerTest {
-    private final CryptoAlgorithm cryptoAlgorithm_ = AwsCrypto.getDefaultCryptoAlgorithm();
+    private final CryptoAlgorithm cryptoAlgorithm_ = CryptoAlgorithm.ALG_AES_192_GCM_IV12_TAG16_NO_KDF;
     private final int frameSize_ = AwsCrypto.getDefaultFrameSize();
     private final Map<String, String> encryptionContext_ = Collections.<String, String> emptyMap();
-    private final MockKMSClient mockKMSClient = new MockKMSClient();
-    private final String cmkId = mockKMSClient.createKey().getKeyMetadata().getKeyId();
-    private final KmsMasterKeyProvider provider_ = new MockKmsProvider(mockKMSClient);
-    private final KmsMasterKey customerMasterKey_ = provider_.getMasterKey(cmkId);
-    private final List<KmsMasterKey> cmks_ = Collections.singletonList(customerMasterKey_);
+    private StaticMasterKey masterKeyProvider = new StaticMasterKey("mock");
+    private final List<StaticMasterKey> cmks_ = Collections.singletonList(masterKeyProvider);
+    private EncryptionMaterialsRequest testRequest
+            = EncryptionMaterialsRequest.newBuilder()
+                                        .setContext(encryptionContext_)
+                                        .setRequestedAlgorithm(cryptoAlgorithm_)
+                                        .build();
 
-    @Test(expected = NullPointerException.class)
-    public void nullMasterKey() {
-        new EncryptionHandler<>(null, encryptionContext_, cryptoAlgorithm_, frameSize_);
-    }
+    private EncryptionMaterials testResult = new DefaultCryptoMaterialsManager(masterKeyProvider)
+                                                 .getMaterialsForEncrypt(testRequest);
 
-    @Test(expected = NullPointerException.class)
-    public void nullEncryptionContext() {
-        new EncryptionHandler<>(cmks_, null, cryptoAlgorithm_, frameSize_);
-    }
+    @Test
+    public void badArguments() {
+        assertThrows(
+                () -> new EncryptionHandler(frameSize_, testResult.toBuilder().setAlgorithm(null).build())
+        );
 
-    @Test(expected = NullPointerException.class)
-    public void nullCryptoAlgorithm() {
-        new EncryptionHandler<>(cmks_, encryptionContext_, null, frameSize_);
-    }
+        assertThrows(
+                () -> new EncryptionHandler(frameSize_, testResult.toBuilder().setEncryptionContext(null).build())
+        );
 
-    @Test(expected = AwsCryptoException.class)
-    public void negativeFrameSize() {
-        new EncryptionHandler<>(cmks_, encryptionContext_, cryptoAlgorithm_, -1);
+        assertThrows(
+                () -> new EncryptionHandler(frameSize_, testResult.toBuilder().setEncryptedDataKeys(null).build())
+        );
+
+        assertThrows(
+                () -> new EncryptionHandler(frameSize_, testResult.toBuilder().setEncryptedDataKeys(emptyList()).build())
+        );
+
+        assertThrows(
+                () -> new EncryptionHandler(frameSize_, testResult.toBuilder().setCleartextDataKey(null).build())
+        );
+
+        assertThrows(
+                () -> new EncryptionHandler(frameSize_, testResult.toBuilder().setMasterKeys(null).build())
+        );
+
+        assertThrows(
+                () -> new EncryptionHandler(-1, testResult)
+        );
     }
 
     @Test(expected = AwsCryptoException.class)
     public void invalidLenProcessBytes() {
-        final EncryptionHandler<KmsMasterKey> encryptionHandler = new EncryptionHandler<>(
-                cmks_,
-                encryptionContext_,
-                cryptoAlgorithm_,
-                frameSize_);
+        final EncryptionHandler encryptionHandler = new EncryptionHandler(frameSize_, testResult);
 
         final byte[] in = new byte[1];
         final byte[] out = new byte[1];
@@ -71,14 +88,20 @@ public class EncryptionHandlerTest {
 
     @Test(expected = AwsCryptoException.class)
     public void invalidOffsetProcessBytes() {
-        final EncryptionHandler<KmsMasterKey> encryptionHandler = new EncryptionHandler<>(
-                cmks_,
-                encryptionContext_,
-                cryptoAlgorithm_,
-                frameSize_);
+        final EncryptionHandler encryptionHandler = new EncryptionHandler(frameSize_, testResult);
 
         final byte[] in = new byte[1];
         final byte[] out = new byte[1];
         encryptionHandler.processBytes(in, -1, in.length, out, 0);
+    }
+
+    @Test
+    public void whenEncrypting_headerIVIsZero() throws Exception {
+        final EncryptionHandler encryptionHandler = new EncryptionHandler(frameSize_, testResult);
+
+        assertArrayEquals(
+                new byte[encryptionHandler.getHeaders().getCryptoAlgoId().getNonceLen()],
+                encryptionHandler.getHeaders().getHeaderNonce()
+        );
     }
 }

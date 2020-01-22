@@ -17,21 +17,38 @@ package com.amazonaws.encryptionsdk.exception;
  * This exception is thrown when the values found in a ciphertext message are
  * invalid or corrupt.
  */
+//@ non_null_by_default
 public class BadCiphertextException extends AwsCryptoException {
     private static final long serialVersionUID = -1L;
 
+    /*@ public normal_behavior
+      @   ensures standardThrowable();
+      @*/
+    //@ pure
     public BadCiphertextException() {
         super();
     }
 
+    /*@ public normal_behavior
+      @   ensures standardThrowable(message);
+      @*/
+    //@ pure
     public BadCiphertextException(final String message) {
         super(message);
     }
 
+    /*@ public normal_behavior
+      @   ensures standardThrowable(cause);
+      @*/
+    //@ pure
     public BadCiphertextException(final Throwable cause) {
         super(cause);
     }
 
+    /*@ public normal_behavior
+      @   ensures standardThrowable(message,cause);
+      @*/
+    //@ pure
     public BadCiphertextException(final String message, final Throwable cause) {
         super(message, cause);
     }

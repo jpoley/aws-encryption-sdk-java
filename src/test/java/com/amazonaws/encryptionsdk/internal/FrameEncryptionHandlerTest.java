@@ -13,15 +13,22 @@
 
 package com.amazonaws.encryptionsdk.internal;
 
+import static com.amazonaws.encryptionsdk.TestUtils.assertThrows;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
+import java.lang.reflect.Field;
+
+import org.bouncycastle.util.encoders.Hex;
+import org.junit.Before;
 import org.junit.Test;
 
 import com.amazonaws.encryptionsdk.AwsCrypto;
 import com.amazonaws.encryptionsdk.CryptoAlgorithm;
+import com.amazonaws.encryptionsdk.model.CipherFrameHeaders;
 
 public class FrameEncryptionHandlerTest {
     private final CryptoAlgorithm cryptoAlgorithm_ = AwsCrypto.getDefaultCryptoAlgorithm();
@@ -31,12 +38,18 @@ public class FrameEncryptionHandlerTest {
     private final SecretKey encryptionKey_ = new SecretKeySpec(dataKeyBytes_, "AES");
     private final int frameSize_ = AwsCrypto.getDefaultFrameSize();
 
-    private final FrameEncryptionHandler frameEncryptionHandler_ = new FrameEncryptionHandler(
-            encryptionKey_,
-            nonceLen_,
-            cryptoAlgorithm_,
-            messageId_,
-            frameSize_);
+    private FrameEncryptionHandler frameEncryptionHandler_;
+
+    @Before
+    public void setUp() throws Exception {
+        frameEncryptionHandler_ = new FrameEncryptionHandler(
+                encryptionKey_,
+                nonceLen_,
+                cryptoAlgorithm_,
+                messageId_,
+                frameSize_
+        );
+    }
 
     @Test
     public void emptyOutBytes() {
@@ -44,5 +57,70 @@ public class FrameEncryptionHandlerTest {
         final byte[] out = new byte[outLen];
         final int processedLen = frameEncryptionHandler_.doFinal(out, 0);
         assertEquals(outLen, processedLen);
+    }
+
+    @Test
+    public void correctIVsGenerated() throws Exception {
+        byte[] buf = new byte[frameSize_ + 1024];
+        for (int i = 0; i <= 254; i++) {
+            byte[] expectedNonce = {
+                    0, 0, 0, 0,
+                    0, 0, 0, 0,
+                    0, 0, 0, (byte) (i + 1)
+            };
+
+            generateTestBlock(buf);
+            assertHeaderNonce(expectedNonce, buf);
+        }
+
+        generateTestBlock(buf);
+        assertHeaderNonce(new byte[] {
+                0, 0, 0, 0,
+                0, 0, 0, 0,
+                0, 0, 1, 0
+        }, buf);
+    }
+
+    @Test
+    public void encryptionHandlerEnforcesFrameLimits() throws Exception {
+        // Skip to the second-to-last frame first. Actually getting there by encrypting block would take a very long
+        // time, so we'll reflect in; for a test that legitimately gets there, see the
+        // FrameEncryptionHandlerVeryLongTest.
+
+        Field f = FrameEncryptionHandler.class.getDeclaredField("frameNumber_");
+        f.setAccessible(true);
+        f.set(frameEncryptionHandler_, 0xFFFF_FFFEL);
+
+        byte[] buf = new byte[frameSize_ + 1024];
+        // Writing frame 0xFFFF_FFFE should succeed.
+        generateTestBlock(buf);
+        assertHeaderNonce(Hex.decode("0000000000000000FFFFFFFE"), buf);
+
+        byte[] oldBuf = buf.clone();
+        // Writing the next frame must fail
+        assertThrows(() -> generateTestBlock(buf));
+        // ... and must not produce any output
+        assertArrayEquals(oldBuf, buf);
+
+        // However we can still finish the encryption
+        frameEncryptionHandler_.doFinal(buf, 0);
+        assertHeaderNonce(Hex.decode("0000000000000000FFFFFFFF"), buf);
+    }
+
+    private void assertHeaderNonce(byte[] expectedNonce, byte[] buf) {
+        CipherFrameHeaders headers = new CipherFrameHeaders();
+        headers.setNonceLength(cryptoAlgorithm_.getNonceLen());
+        headers.deserialize(buf, 0);
+
+        assertArrayEquals(
+                expectedNonce,
+                headers.getNonce()
+        );
+    }
+
+    private void generateTestBlock(byte[] buf) {
+        frameEncryptionHandler_.processBytes(
+                new byte[frameSize_], 0, frameSize_, buf, 0
+        );
     }
 }

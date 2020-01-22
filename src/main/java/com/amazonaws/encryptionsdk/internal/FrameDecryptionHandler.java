@@ -22,7 +22,6 @@ import com.amazonaws.encryptionsdk.CryptoAlgorithm;
 import com.amazonaws.encryptionsdk.exception.AwsCryptoException;
 import com.amazonaws.encryptionsdk.exception.BadCiphertextException;
 import com.amazonaws.encryptionsdk.model.CipherFrameHeaders;
-import com.amazonaws.services.kms.model.InvalidCiphertextException;
 
 /**
  * The frame decryption handler is a subclass of the decryption handler and
@@ -35,15 +34,16 @@ import com.amazonaws.services.kms.model.InvalidCiphertextException;
 class FrameDecryptionHandler implements CryptoHandler {
     private final SecretKey decryptionKey_;
     private final CryptoAlgorithm cryptoAlgo_;
+    private final CipherHandler cipherHandler_;
     private final byte[] messageId_;
+
     private final short nonceLen_;
 
     private CipherFrameHeaders currentFrameHeaders_;
-
     private final int frameSize_;
     private long frameNumber_ = 1;
-    boolean complete_ = false;
 
+    boolean complete_ = false;
     private byte[] unparsedBytes_ = new byte[0];
 
     /**
@@ -60,6 +60,7 @@ class FrameDecryptionHandler implements CryptoHandler {
         cryptoAlgo_ = cryptoAlgo;
         messageId_ = messageId;
         frameSize_ = frameLen;
+        cipherHandler_ = new CipherHandler(decryptionKey_, Cipher.DECRYPT_MODE, cryptoAlgo_);
     }
 
     /**
@@ -221,6 +222,16 @@ class FrameDecryptionHandler implements CryptoHandler {
         return outSize;
     }
 
+    @Override
+    public int estimatePartialOutputSize(int inLen) {
+        return estimateOutputSize(inLen);
+    }
+
+    @Override
+    public int estimateFinalOutputSize() {
+        return 0;
+    }
+
     /**
      * Returns the plaintext bytes of the encrypted content.
      * 
@@ -254,13 +265,7 @@ class FrameDecryptionHandler implements CryptoHandler {
                     frameSize_);
         }
 
-        final CipherHandler cipherHandler = new CipherHandler(
-                decryptionKey_,
-                nonce,
-                contentAad,
-                Cipher.DECRYPT_MODE,
-                cryptoAlgo_);
-        return cipherHandler.cipherData(input, off, len);
+        return cipherHandler_.cipherData(nonce, contentAad, input, off, len);
     }
 
     @Override
