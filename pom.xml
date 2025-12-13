@@ -4,7 +4,7 @@
 
     <groupId>com.amazonaws</groupId>
     <artifactId>aws-encryption-sdk-java</artifactId>
-    <version>1.6.1</version>
+    <version>3.0.2</version>
     <packaging>jar</packaging>
 
     <name>aws-encryption-sdk-java</name>
@@ -37,32 +37,79 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
+<!--    Uncomment the next block for development with TestVectorsAwsCryptographicMaterialProviders in local mvn -->
+<!--    <repositories>-->
+<!--        <repository>-->
+<!--            <id>localRepository</id>-->
+<!--            <name>localRepository</name>-->
+<!--            <url>file://${user.home}/.m2/repository/</url>-->
+<!--        </repository>-->
+<!--    </repositories>-->
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>software.amazon.awssdk</groupId>
+                <artifactId>bom</artifactId>
+                <version>2.26.3</version>
+                <optional>true</optional>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
         <dependency>
             <groupId>com.amazonaws</groupId>
-            <artifactId>aws-java-sdk</artifactId>
-            <version>1.11.561</version>
+            <artifactId>aws-java-sdk-kms</artifactId>
+            <version>1.12.531</version>
             <optional>true</optional>
         </dependency>
 
         <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>kms</artifactId>
+            <version>2.26.3</version>
+        </dependency>
+
+        <dependency>
+            <groupId>software.amazon.cryptography</groupId>
+            <artifactId>aws-cryptographic-material-providers</artifactId>
+            <version>1.7.0</version>
+        </dependency>
+
+        <dependency>
+            <groupId>software.amazon.cryptography</groupId>
+            <artifactId>TestAwsCryptographicMaterialProviders</artifactId>
+            <version>1.7.0</version>
+            <optional>true</optional>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
             <groupId>org.bouncycastle</groupId>
-            <artifactId>bcprov-ext-jdk15on</artifactId>
-            <version>1.61</version>
+            <artifactId>bcprov-jdk18on</artifactId>
+            <version>1.78.1</version>
         </dependency>
 
         <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-core</artifactId>
-            <version>2.28.1</version>
+            <version>4.11.0</version>
             <scope>test</scope>
         </dependency>
 
         <dependency>
-            <groupId>junit</groupId>
-            <artifactId>junit</artifactId>
-            <version>4.12</version>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>5.9.2</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.vintage</groupId>
+            <artifactId>junit-vintage-engine</artifactId>
+            <version>5.9.3</version>
             <scope>test</scope>
         </dependency>
 
@@ -73,34 +120,42 @@
             <scope>test</scope>
         </dependency>
 
-
         <dependency>
-            <groupId>com.google.code.findbugs</groupId>
-            <artifactId>jsr305</artifactId>
-            <version>3.0.2</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.google.code.findbugs</groupId>
-            <artifactId>annotations</artifactId>
-            <version>3.0.1</version>
+            <groupId>com.github.spotbugs</groupId>
+            <artifactId>spotbugs-annotations</artifactId>
+            <version>4.7.3</version>
             <scope>provided</scope>
         </dependency>
 
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-lang3</artifactId>
-            <version>3.9</version>
+            <version>3.13.0</version>
         </dependency>
+
+        <dependency>
+            <groupId>commons-io</groupId>
+            <artifactId>commons-io</artifactId>
+            <version>2.14.0</version>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
     <!--Custom repository:-->
     <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+            </resource>
+        </resources>
+
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.8.0</version>
+                <version>3.10.1</version>
                 <configuration>
                     <source>1.8</source>
                     <target>1.8</target>
@@ -110,19 +165,20 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-javadoc-plugin</artifactId>
-                <version>3.0.1</version>
+                <version>3.4.1</version>
                 <configuration>
                     <minmemory>128m</minmemory>
                     <maxmemory>1024m</maxmemory>
                     <doclint>none</doclint>
                     <source>8</source>
+                    <quiet>true</quiet>
                 </configuration>
             </plugin>
 
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>build-helper-maven-plugin</artifactId>
-                <version>3.0.0</version>
+                <version>3.3.0</version>
                 <executions>
                     <execution>
                         <id>add-test-source</id>
@@ -138,10 +194,117 @@
                     </execution>
                 </executions>
             </plugin>
+
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.8</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>check</id>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>INSTRUCTION</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.87</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.80</minimum>
+                                        </limit>
+                                    </limits>
+                                    <excludes>
+                                        <exclude>com.xyz.ClassToExclude</exclude>
+                                    </excludes>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>com.coveo</groupId>
+                <artifactId>fmt-maven-plugin</artifactId>
+                <version>2.13</version>
+
+                <!-- Configure no goals. -->
+                <!--Until our CI builds no longer depend on Java 8, skip this during build.-->
+                <!--We instead manually check this in Java 11 environments to block builds, -->
+                <!--And additionally check this explicitly through Github Actions.-->
+            </plugin>
         </plugins>
     </build>
 
     <profiles>
+        <profile>
+            <id>publishingCodeArtifact</id>
+
+            <distributionManagement>
+                <!--
+                Registers an alternate repository for testing the publishing process using CodeArtifact
+                before moving to the production sonatype repository.
+
+                This can be used with a mvn invocation like:
+
+                mvn deploy -PpublishingCodeArtifact \
+                           -DaltDeploymentRepository=codeartifact::default::$CODEARTIFACT_REPO_URL \
+                           ...
+                -->
+                <repository>
+                    <id>codeartifact</id>
+                    <name>codeartifact</name>
+                    <!-- url specified using -DaltDeploymentRepository to avoid hardcoding it here -->
+                </repository>
+            </distributionManagement>
+
+            <!-- TODO: figure out how to share this config between the two publishing profiles -->
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>3.0.1</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                                <configuration>
+                                    <gpgArguments>
+                                        <arg>--pinentry-mode</arg>
+                                        <arg>loopback</arg>
+                                    </gpgArguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
         <profile>
             <id>publishing</id>
 
@@ -157,7 +320,7 @@
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-gpg-plugin</artifactId>
-                        <version>1.6</version>
+                        <version>3.0.1</version>
                         <executions>
                             <execution>
                                 <id>sign-artifacts</id>
@@ -176,13 +339,13 @@
                     </plugin>
 
                     <plugin>
-                        <groupId>org.sonatype.plugins</groupId>
-                        <artifactId>nexus-staging-maven-plugin</artifactId>
-                        <version>1.6.3</version>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.7.0</version>
                         <extensions>true</extensions>
                         <configuration>
-                            <serverId>sonatype-nexus-staging</serverId>
-                            <nexusUrl>https://aws.oss.sonatype.org</nexusUrl>
+                            <publishingServerId>central</publishingServerId>
+                            <autoPublish>true</autoPublish>
                         </configuration>
                     </plugin>
                 </plugins>
@@ -199,7 +362,7 @@
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-surefire-plugin</artifactId>
-                        <version>2.22.0</version>
+                        <version>3.1.2</version>
                         <configuration>
                             <includes>
                                 <include>**/AllTestsSuite.java</include>
@@ -220,7 +383,7 @@
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-surefire-plugin</artifactId>
-                        <version>2.22.0</version>
+                        <version>3.1.2</version>
                         <configuration>
                             <includes>
                                 <include>**/FastTestsOnlySuite.java</include>
@@ -231,4 +394,5 @@
             </build>
         </profile>
     </profiles>
+
 </project>

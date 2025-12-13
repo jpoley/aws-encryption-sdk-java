@@ -1,29 +1,12 @@
-/*
- * Copyright 2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
- * 
- * Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except
- * in compliance with the License. A copy of the License is located at
- * 
- * http://aws.amazon.com/apache2.0
- * 
- * or in the "license" file accompanying this file. This file is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations under the License.
- */
+// Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
 
 package com.amazonaws.encryptionsdk.model;
 
+import static com.amazonaws.encryptionsdk.TestUtils.assertThrows;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
-
-import java.nio.ByteBuffer;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
-
-import javax.crypto.spec.SecretKeySpec;
-
-import org.junit.Test;
+import static org.junit.Assert.assertNotNull;
 
 import com.amazonaws.encryptionsdk.AwsCrypto;
 import com.amazonaws.encryptionsdk.CryptoAlgorithm;
@@ -32,409 +15,599 @@ import com.amazonaws.encryptionsdk.exception.BadCiphertextException;
 import com.amazonaws.encryptionsdk.internal.Constants;
 import com.amazonaws.encryptionsdk.internal.EncryptionContextSerializer;
 import com.amazonaws.encryptionsdk.internal.RandomBytesGenerator;
-import com.amazonaws.encryptionsdk.internal.VersionInfo;
+import java.nio.ByteBuffer;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import org.junit.Test;
 
 public class CiphertextHeadersTest {
-    final CryptoAlgorithm cryptoAlgo_ = AwsCrypto.getDefaultCryptoAlgorithm();
-    final String keyProviderId_ = "None";
-    final byte[] keyProviderInfo_ = "TestKeyID".getBytes();
-    final String keyId_ = "testKeyId";
-    final byte version_ = VersionInfo.CURRENT_CIPHERTEXT_VERSION;
-    final CiphertextType type_ = CiphertextType.CUSTOMER_AUTHENTICATED_ENCRYPTED_DATA;
-    final int nonceLen_ = cryptoAlgo_.getNonceLen();
-    final int tagLenBytes_ = cryptoAlgo_.getTagLen();
-    final int tagLenBits_ = tagLenBytes_ * 8;
-    final ContentType contentType_ = ContentType.FRAME;
-    final int frameSize_ = AwsCrypto.getDefaultFrameSize();
+  final CryptoAlgorithm cryptoAlgo_ =
+      CryptoAlgorithm.ALG_AES_256_GCM_IV12_TAG16_HKDF_SHA384_ECDSA_P384;
+  final String keyProviderId_ = "None";
+  final byte[] keyProviderInfo_ = "TestKeyID".getBytes();
+  final byte version_ = cryptoAlgo_.getMessageFormatVersion();
+  final byte invalidVersion_ = 0x00;
+  final CiphertextType type_ = CiphertextType.CUSTOMER_AUTHENTICATED_ENCRYPTED_DATA;
+  final int nonceLen_ = cryptoAlgo_.getNonceLen();
+  final int tagLenBytes_ = cryptoAlgo_.getTagLen();
+  final ContentType contentType_ = ContentType.FRAME;
+  final int frameSize_ = AwsCrypto.getDefaultFrameSize();
 
-    byte[] messageId_ = RandomBytesGenerator.generate(Constants.MESSAGE_ID_LEN);
+  // A set of crypto algs that are representative of the different ciphertext header formats
+  final List<CryptoAlgorithm> testAlgs =
+      Arrays.asList(
+          CryptoAlgorithm.ALG_AES_256_GCM_HKDF_SHA512_COMMIT_KEY,
+          CryptoAlgorithm.ALG_AES_256_GCM_IV12_TAG16_HKDF_SHA256);
 
-    byte[] testPlaintextKey_ = RandomBytesGenerator.generate(cryptoAlgo_.getKeyLength());
-    SecretKeySpec testKey_ = new SecretKeySpec(testPlaintextKey_, cryptoAlgo_.getKeyAlgo());
-    byte[] encryptedKey_ = RandomBytesGenerator.generate(cryptoAlgo_.getKeyLength());
+  byte[] encryptedKey_ = RandomBytesGenerator.generate(cryptoAlgo_.getKeyLength());
 
-    final KeyBlob keyBlob_ = new KeyBlob(keyProviderId_, keyProviderInfo_, encryptedKey_);
+  final KeyBlob keyBlob_ = new KeyBlob(keyProviderId_, keyProviderInfo_, encryptedKey_);
 
-    byte[] headerNonce_ = RandomBytesGenerator.generate(nonceLen_);
-    byte[] headerTag_ = RandomBytesGenerator.generate(tagLenBytes_);
+  byte[] headerNonce_ = RandomBytesGenerator.generate(nonceLen_);
+  byte[] headerTag_ = RandomBytesGenerator.generate(tagLenBytes_);
 
-    @Test
-    public void serializeDeserialize() {
-        Map<String, String> encryptionContext = new HashMap<String, String>(1);
-        encryptionContext.put("ENC", "CiphertextHeader Test");
+  @Test
+  public void serializeDeserialize() {
+    int maxEncryptedDataKeys = 42;
 
-        final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext);
+    Map<String, String> encryptionContext = new HashMap<String, String>(1);
+    encryptionContext.put("ENC", "CiphertextHeader Test");
 
-        final byte[] headerBytes = ciphertextHeaders.toByteArray();
-        final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
-        reconstructedHeaders.deserialize(headerBytes, 0);
-        final byte[] reconstructedHeaderBytes = reconstructedHeaders.toByteArray();
+    for (CryptoAlgorithm alg : testAlgs) {
+      final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext, alg);
 
-        assertArrayEquals(headerBytes, reconstructedHeaderBytes);
+      final byte[] headerBytes = ciphertextHeaders.toByteArray();
+      final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
+      reconstructedHeaders.deserialize(headerBytes, 0, maxEncryptedDataKeys);
+      final byte[] reconstructedHeaderBytes = reconstructedHeaders.toByteArray();
+
+      assertEquals(reconstructedHeaders.getMaxEncryptedDataKeys(), maxEncryptedDataKeys);
+      assertArrayEquals(headerBytes, reconstructedHeaderBytes);
     }
+  }
 
-    @Test
-    public void serializeDeserializeStreaming() {
-        Map<String, String> encryptionContext = new HashMap<String, String>(1);
-        encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
+  @Test
+  public void serializeDeserializeDefaultMaxEncryptedDataKeys() {
+    Map<String, String> encryptionContext = new HashMap<String, String>(1);
+    encryptionContext.put("ENC", "CiphertextHeader Test");
 
-        final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext);
+    for (CryptoAlgorithm alg : testAlgs) {
+      final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext, alg);
 
-        final byte[] headerBytes = ciphertextHeaders.toByteArray();
-        final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
+      final byte[] headerBytes = ciphertextHeaders.toByteArray();
+      final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
+      reconstructedHeaders.deserialize(headerBytes, 0);
+      final byte[] reconstructedHeaderBytes = reconstructedHeaders.toByteArray();
 
-        int totalParsedBytes = 0;
-        int bytesToParseLen = 1;
-        int bytesParsed;
+      assertEquals(
+          reconstructedHeaders.getMaxEncryptedDataKeys(),
+          CiphertextHeaders.NO_MAX_ENCRYPTED_DATA_KEYS);
+      assertArrayEquals(headerBytes, reconstructedHeaderBytes);
+    }
+  }
 
-        while (reconstructedHeaders.isComplete() == false) {
-            final byte[] bytesToParse = new byte[bytesToParseLen];
-            System.arraycopy(headerBytes, totalParsedBytes, bytesToParse, 0, bytesToParse.length);
+  @Test
+  public void serializeDeserializeStreaming() {
+    Map<String, String> encryptionContext = new HashMap<String, String>(1);
+    encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
 
-            bytesParsed = reconstructedHeaders.deserialize(bytesToParse, 0);
-            if (bytesParsed == 0) {
-                bytesToParseLen++;
-            } else {
-                totalParsedBytes += bytesParsed;
-                bytesToParseLen = 1;
-            }
+    for (CryptoAlgorithm alg : testAlgs) {
+      final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext, alg);
+
+      final byte[] headerBytes = ciphertextHeaders.toByteArray();
+      final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
+
+      int totalParsedBytes = 0;
+      int bytesToParseLen = 1;
+      int bytesParsed;
+
+      while (reconstructedHeaders.isComplete() == false) {
+        final byte[] bytesToParse = new byte[bytesToParseLen];
+        System.arraycopy(headerBytes, totalParsedBytes, bytesToParse, 0, bytesToParse.length);
+
+        bytesParsed =
+            reconstructedHeaders.deserialize(
+                bytesToParse, 0, CiphertextHeaders.NO_MAX_ENCRYPTED_DATA_KEYS);
+        if (bytesParsed == 0) {
+          bytesToParseLen++;
+        } else {
+          totalParsedBytes += bytesParsed;
+          bytesToParseLen = 1;
         }
+      }
 
-        final byte[] reconstructedHeaderBytes = reconstructedHeaders.toByteArray();
+      final byte[] reconstructedHeaderBytes = reconstructedHeaders.toByteArray();
 
-        assertArrayEquals(headerBytes, reconstructedHeaderBytes);
+      assertArrayEquals(headerBytes, reconstructedHeaderBytes);
+    }
+  }
+
+  @Test
+  public void deserializeNull() {
+    final CiphertextHeaders ciphertextHeaders = new CiphertextHeaders();
+    final int deserializedBytes =
+        ciphertextHeaders.deserialize(null, 0, CiphertextHeaders.NO_MAX_ENCRYPTED_DATA_KEYS);
+
+    assertEquals(0, deserializedBytes);
+  }
+
+  @Test
+  public void overlyLargeEncryptionContext() {
+    final int size = Constants.UNSIGNED_SHORT_MAX_VAL + 1;
+    final byte[] encContextBytes = RandomBytesGenerator.generate(size);
+    for (CryptoAlgorithm alg : testAlgs) {
+      assertThrows(AwsCryptoException.class, () -> createCiphertextHeaders(encContextBytes, alg));
+    }
+  }
+
+  @Test
+  public void serializeWithNullHeaderNonce() {
+    for (CryptoAlgorithm alg : testAlgs) {
+      final CiphertextHeaders ciphertextHeaders =
+          new CiphertextHeaders(
+              type_,
+              alg,
+              new byte[0],
+              Collections.singletonList(keyBlob_),
+              contentType_,
+              frameSize_);
+      ciphertextHeaders.setHeaderTag(headerTag_);
+
+      assertThrows(AwsCryptoException.class, () -> ciphertextHeaders.toByteArray());
+    }
+  }
+
+  @Test
+  public void serializeWithNullHeaderTag() {
+    for (CryptoAlgorithm alg : testAlgs) {
+      final CiphertextHeaders ciphertextHeaders =
+          new CiphertextHeaders(
+              type_,
+              alg,
+              new byte[0],
+              Collections.singletonList(keyBlob_),
+              contentType_,
+              frameSize_);
+      ciphertextHeaders.setHeaderNonce(headerNonce_);
+
+      assertThrows(AwsCryptoException.class, () -> ciphertextHeaders.toByteArray());
+    }
+  }
+
+  @Test
+  public void serializeWithNullSuiteData() {
+    // Only applicable for V2 algorithms
+    CryptoAlgorithm alg = CryptoAlgorithm.ALG_AES_256_GCM_HKDF_SHA512_COMMIT_KEY;
+    final CiphertextHeaders ciphertextHeaders =
+        new CiphertextHeaders(
+            type_, alg, new byte[0], Collections.singletonList(keyBlob_), contentType_, frameSize_);
+    ciphertextHeaders.setHeaderTag(headerTag_);
+    ciphertextHeaders.setHeaderNonce(headerNonce_);
+
+    assertThrows(AwsCryptoException.class, () -> ciphertextHeaders.toByteArray());
+  }
+
+  /*
+   * @Test
+   * public void byteFormatCheck() {
+   * testPlaintextKey_ = ByteFormatCheckValues.getPlaintextKey();
+   * testKey_ = new SecretKeySpec(testPlaintextKey_,
+   * cryptoAlgo_.getKeySpec());
+   * encryptedKey_ = ByteFormatCheckValues.getEncryptedKey();
+   * dataKey_ = new AWSKMSDataKey(testKey_, encryptedKey_);
+   * headerNonce_ = ByteFormatCheckValues.getNonce();
+   * headerTag_ = ByteFormatCheckValues.getTag();
+   *
+   * Map<String, String> encryptionContext = new HashMap<String, String>(1);
+   * encryptionContext.put("ENC", "CiphertextHeader format check test");
+   *
+   * final CiphertextHeaders ciphertextHeaders =
+   * createCiphertextHeaders(encryptionContext);
+   * //NOTE: this test will fail because of the line below.
+   * //That is, the message id is randomly generated in the ciphertext
+   * headers.
+   * messageId_ = ciphertextHeaders.getMessageId();
+   * final byte[] ciphertextHeaderHash =
+   * TestIOUtils.getSha256Hash(ciphertextHeaders.toByteArray());
+   *
+   * assertArrayEquals(ByteFormatCheckValues.getCiphertextHeaderHash(),
+   * ciphertextHeaderHash);
+   * }
+   */
+
+  private CiphertextHeaders createCiphertextHeaders(
+      final byte[] encryptionContextBytes, CryptoAlgorithm cryptoAlg) {
+    final CiphertextHeaders ciphertextHeaders =
+        new CiphertextHeaders(
+            type_,
+            cryptoAlg,
+            encryptionContextBytes,
+            Collections.singletonList(keyBlob_),
+            contentType_,
+            frameSize_);
+
+    ciphertextHeaders.setHeaderNonce(headerNonce_);
+    ciphertextHeaders.setHeaderTag(headerTag_);
+
+    if (cryptoAlg.getMessageFormatVersion() == 2) {
+      ciphertextHeaders.setSuiteData(new byte[cryptoAlg.getSuiteDataLength()]);
     }
 
-    @Test
-    public void deserializeNull() {
-        final CiphertextHeaders ciphertextHeaders = new CiphertextHeaders();
-        final int deserializedBytes = ciphertextHeaders.deserialize(null, 0);
+    return ciphertextHeaders;
+  }
 
-        assertEquals(0, deserializedBytes);
+  private CiphertextHeaders createCiphertextHeaders(
+      final Map<String, String> encryptionContext, CryptoAlgorithm cryptoAlg) {
+    byte[] encryptionContextBytes = null;
+    if (encryptionContext != null) {
+      encryptionContextBytes = EncryptionContextSerializer.serialize(encryptionContext);
     }
 
-    @Test(expected = AwsCryptoException.class)
-    public void overlyLargeEncryptionContext() {
-        final int size = Constants.UNSIGNED_SHORT_MAX_VAL + 1;
-        final byte[] encContextBytes = RandomBytesGenerator.generate(size);
+    return createCiphertextHeaders(encryptionContextBytes, cryptoAlg);
+  }
 
-        createCiphertextHeaders(encContextBytes);
+  @SuppressWarnings("deprecation")
+  @Test
+  public void legacyConstructCiphertextHeaders() {
+    final Map<String, String> encryptionContext = new HashMap<String, String>(1);
+    encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
+    final byte[] encryptionContextBytes = EncryptionContextSerializer.serialize(encryptionContext);
+
+    final CiphertextHeaders ciphertextHeaders =
+        new CiphertextHeaders(
+            version_,
+            type_,
+            cryptoAlgo_,
+            encryptionContextBytes,
+            Collections.singletonList(keyBlob_),
+            contentType_,
+            frameSize_);
+
+    ciphertextHeaders.setHeaderNonce(headerNonce_);
+    ciphertextHeaders.setHeaderTag(headerTag_);
+    assertNotNull(ciphertextHeaders);
+  }
+
+  @SuppressWarnings("deprecation")
+  @Test(expected = IllegalArgumentException.class)
+  public void legacyConstructCiphertextHeadersMismatchedVersion() {
+    final Map<String, String> encryptionContext = new HashMap<String, String>(1);
+    encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
+    final byte[] encryptionContextBytes = EncryptionContextSerializer.serialize(encryptionContext);
+
+    final CiphertextHeaders ciphertextHeaders =
+        new CiphertextHeaders(
+            invalidVersion_,
+            type_,
+            cryptoAlgo_,
+            encryptionContextBytes,
+            Collections.singletonList(keyBlob_),
+            contentType_,
+            frameSize_);
+  }
+
+  @Test
+  public void checkEncContextLen() {
+    final Map<String, String> encryptionContext = new HashMap<String, String>(1);
+    encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
+    final byte[] encryptionContextBytes = EncryptionContextSerializer.serialize(encryptionContext);
+    final int encryptionContextLen = encryptionContextBytes.length;
+
+    for (CryptoAlgorithm alg : testAlgs) {
+      final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext, alg);
+      final byte[] headerBytes = ciphertextHeaders.toByteArray();
+
+      final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
+      reconstructedHeaders.deserialize(
+          headerBytes, 0, CiphertextHeaders.NO_MAX_ENCRYPTED_DATA_KEYS);
+
+      assertEquals(encryptionContextLen, reconstructedHeaders.getEncryptionContextLen());
     }
+  }
 
-    @Test(expected = AwsCryptoException.class)
-    public void serializeWithNullHeaderNonce() {
-        final CiphertextHeaders ciphertextHeaders = new CiphertextHeaders(
-                version_,
-                type_,
-                cryptoAlgo_,
-                new byte[0],
-                Collections.singletonList(keyBlob_),
-                contentType_,
-                frameSize_);
-        ciphertextHeaders.setHeaderTag(headerTag_);
+  @Test
+  public void checkKeyBlobCount() {
+    final Map<String, String> encryptionContext = new HashMap<String, String>(1);
+    encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
 
-        ciphertextHeaders.toByteArray();
+    for (CryptoAlgorithm alg : testAlgs) {
+      final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext, alg);
+      final byte[] headerBytes = ciphertextHeaders.toByteArray();
+
+      final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
+      reconstructedHeaders.deserialize(
+          headerBytes, 0, CiphertextHeaders.NO_MAX_ENCRYPTED_DATA_KEYS);
+
+      assertEquals(1, reconstructedHeaders.getEncryptedKeyBlobCount());
     }
+  }
 
-    @Test(expected = AwsCryptoException.class)
-    public void serializeWithNullHeaderTag() {
-        final CiphertextHeaders ciphertextHeaders = new CiphertextHeaders(
-                version_,
-                type_,
-                cryptoAlgo_,
-                new byte[0],
-                Collections.singletonList(keyBlob_),
-                contentType_,
-                frameSize_);
-        ciphertextHeaders.setHeaderNonce(headerNonce_);
+  @Test
+  public void checkNullMessageId() {
+    final CiphertextHeaders ciphertextHeaders = new CiphertextHeaders();
 
-        ciphertextHeaders.toByteArray();
+    assertEquals(null, ciphertextHeaders.getMessageId());
+  }
+
+  @Test
+  public void checkNullHeaderNonce() {
+    final CiphertextHeaders ciphertextHeaders = new CiphertextHeaders();
+
+    assertEquals(null, ciphertextHeaders.getHeaderNonce());
+  }
+
+  @Test
+  public void checkNullHeaderTag() {
+    final CiphertextHeaders ciphertextHeaders = new CiphertextHeaders();
+
+    assertEquals(null, ciphertextHeaders.getHeaderTag());
+  }
+
+  private void readVersion(final ByteBuffer headerBuff) {
+    headerBuff.get();
+  }
+
+  private void readType(final ByteBuffer headerBuff) {
+    readVersion(headerBuff);
+    headerBuff.get();
+  }
+
+  private void readToAlgoId(final ByteBuffer headerBuff, final CryptoAlgorithm cryptoAlg) {
+    // Use the message format version to determine where the algorithm Id is in the
+    // header and how to get to it.
+    if (cryptoAlg.getMessageFormatVersion() == 1) {
+      readType(headerBuff);
+    } else {
+      readVersion(headerBuff);
     }
+  }
 
-    /*
-     * @Test
-     * public void byteFormatCheck() {
-     * testPlaintextKey_ = ByteFormatCheckValues.getPlaintextKey();
-     * testKey_ = new SecretKeySpec(testPlaintextKey_,
-     * cryptoAlgo_.getKeySpec());
-     * encryptedKey_ = ByteFormatCheckValues.getEncryptedKey();
-     * dataKey_ = new AWSKMSDataKey(testKey_, encryptedKey_);
-     * headerNonce_ = ByteFormatCheckValues.getNonce();
-     * headerTag_ = ByteFormatCheckValues.getTag();
-     * 
-     * Map<String, String> encryptionContext = new HashMap<String, String>(1);
-     * encryptionContext.put("ENC", "CiphertextHeader format check test");
-     * 
-     * final CiphertextHeaders ciphertextHeaders =
-     * createCiphertextHeaders(encryptionContext);
-     * //NOTE: this test will fail because of the line below.
-     * //That is, the message id is randomly generated in the ciphertext
-     * headers.
-     * messageId_ = ciphertextHeaders.getMessageId();
-     * final byte[] ciphertextHeaderHash =
-     * TestIOUtils.getSha256Hash(ciphertextHeaders.toByteArray());
-     * 
-     * assertArrayEquals(ByteFormatCheckValues.getCiphertextHeaderHash(),
-     * ciphertextHeaderHash);
-     * }
-     */
+  private void readAlgoId(final ByteBuffer headerBuff, final CryptoAlgorithm cryptoAlg) {
+    readToAlgoId(headerBuff, cryptoAlg);
+    headerBuff.getShort();
+  }
 
-    private CiphertextHeaders createCiphertextHeaders(final byte[] encryptionContextBytes) {
-        final CiphertextHeaders ciphertextHeaders = new CiphertextHeaders(
-                version_,
-                type_,
-                cryptoAlgo_,
-                encryptionContextBytes,
-                Collections.singletonList(keyBlob_),
-                contentType_,
-                frameSize_);
+  private void readEncContext(final ByteBuffer headerBuff, final CryptoAlgorithm cryptoAlg) {
+    readAlgoId(headerBuff, cryptoAlg);
 
-        ciphertextHeaders.setHeaderNonce(headerNonce_);
-        ciphertextHeaders.setHeaderTag(headerTag_);
+    // pull out messageId to get to enc context len.
+    final byte[] msgId = new byte[cryptoAlg.getMessageIdLength()];
+    headerBuff.get(msgId);
 
-        return ciphertextHeaders;
+    // pull out enc context to get to key count.
+    final int encContextLen = headerBuff.getShort();
+    final byte[] encContext = new byte[encContextLen];
+    headerBuff.get(encContext);
+  }
+
+  private void readKeyBlob(final ByteBuffer headerBuff, final CryptoAlgorithm cryptoAlg) {
+    readEncContext(headerBuff, cryptoAlg);
+
+    headerBuff.getShort(); // get key count
+    final short keyProviderIdLen = headerBuff.getShort();
+    final byte[] keyProviderId = new byte[keyProviderIdLen];
+    headerBuff.get(keyProviderId);
+    final short keyProviderInfoLen = headerBuff.getShort();
+    final byte[] keyProviderInfo = new byte[keyProviderInfoLen];
+    headerBuff.get(keyProviderInfo);
+    final short keyLen = headerBuff.getShort();
+    final byte[] key = new byte[keyLen];
+    headerBuff.get(key);
+  }
+
+  private void readToContentType(final ByteBuffer headerBuff, final CryptoAlgorithm cryptoAlg) {
+    readKeyBlob(headerBuff, cryptoAlg);
+  }
+
+  private void readContentType(final ByteBuffer headerBuff, final CryptoAlgorithm cryptoAlg) {
+    readToContentType(headerBuff, cryptoAlg);
+    headerBuff.get();
+  }
+
+  private void readToReservedField(final ByteBuffer headerBuff, final CryptoAlgorithm cryptoAlg) {
+    readContentType(headerBuff, cryptoAlg);
+  }
+
+  private void readReservedField(final ByteBuffer headerBuff, final CryptoAlgorithm cryptoAlg) {
+    readToReservedField(headerBuff, cryptoAlg);
+    headerBuff.getInt();
+  }
+
+  private void readToNonceLen(final ByteBuffer headerBuff, final CryptoAlgorithm cryptoAlg) {
+    readReservedField(headerBuff, cryptoAlg);
+  }
+
+  private void readNonceLen(final ByteBuffer headerBuff, final CryptoAlgorithm cryptoAlg) {
+    readToNonceLen(headerBuff, cryptoAlg);
+    headerBuff.get();
+  }
+
+  private void readToFrameLen(final ByteBuffer headerBuff, final CryptoAlgorithm cryptoAlg) {
+    // Use the message format version to determine where the frame length is in the
+    // header and how to get to it.
+    if (cryptoAlg.getMessageFormatVersion() == 1) {
+      readNonceLen(headerBuff, cryptoAlg);
+    } else {
+      readContentType(headerBuff, cryptoAlg);
     }
+  }
 
-    private CiphertextHeaders createCiphertextHeaders(final Map<String, String> encryptionContext) {
-        byte[] encryptionContextBytes = null;
-        if (encryptionContext != null) {
-            encryptionContextBytes = EncryptionContextSerializer.serialize(encryptionContext);
-        }
+  @Test
+  public void invalidVersion() {
+    final Map<String, String> encryptionContext = new HashMap<String, String>(1);
+    encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
 
-        return createCiphertextHeaders(encryptionContextBytes);
+    for (CryptoAlgorithm alg : testAlgs) {
+      final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext, alg);
+      final byte[] headerBytes = ciphertextHeaders.toByteArray();
+      final ByteBuffer headerBuff = ByteBuffer.wrap(headerBytes);
+
+      // set version to invalid type of 0.
+      headerBuff.put((byte) 0);
+
+      final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
+      assertThrows(
+          BadCiphertextException.class,
+          "Invalid version",
+          () ->
+              reconstructedHeaders.deserialize(
+                  headerBuff.array(), 0, CiphertextHeaders.NO_MAX_ENCRYPTED_DATA_KEYS));
     }
+  }
 
-    @Test
-    public void checkEncContextLen() {
-        final Map<String, String> encryptionContext = new HashMap<String, String>(1);
-        encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
-        final byte[] encryptionContextBytes = EncryptionContextSerializer.serialize(encryptionContext);
-        final int encryptionContextLen = encryptionContextBytes.length;
+  @Test
+  public void invalidType() {
+    // Only applicable for V1 algorithms
+    final Map<String, String> encryptionContext = new HashMap<String, String>(1);
+    encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
+    final CryptoAlgorithm cryptoAlgorithm = CryptoAlgorithm.ALG_AES_256_GCM_IV12_TAG16_HKDF_SHA256;
 
-        final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext);
-        final byte[] headerBytes = ciphertextHeaders.toByteArray();
+    final CiphertextHeaders ciphertextHeaders =
+        createCiphertextHeaders(encryptionContext, cryptoAlgorithm);
+    final byte[] headerBytes = ciphertextHeaders.toByteArray();
+    final ByteBuffer headerBuff = ByteBuffer.wrap(headerBytes);
 
-        final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
-        reconstructedHeaders.deserialize(headerBytes, 0);
+    readVersion(headerBuff);
 
-        assertEquals(encryptionContextLen, reconstructedHeaders.getEncryptionContextLen());
+    // set type to invalid value of 0.
+    headerBuff.put((byte) 0);
+
+    final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
+    assertThrows(
+        BadCiphertextException.class,
+        "Invalid ciphertext type",
+        () ->
+            reconstructedHeaders.deserialize(
+                headerBuff.array(), 0, CiphertextHeaders.NO_MAX_ENCRYPTED_DATA_KEYS));
+  }
+
+  @Test
+  public void invalidAlgoId() {
+    final Map<String, String> encryptionContext = new HashMap<String, String>(1);
+    encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
+
+    for (CryptoAlgorithm alg : testAlgs) {
+      final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext, alg);
+      final byte[] headerBytes = ciphertextHeaders.toByteArray();
+      final ByteBuffer headerBuff = ByteBuffer.wrap(headerBytes);
+
+      readToAlgoId(headerBuff, alg);
+
+      // set algoId to invalid value of 0.
+      headerBuff.putShort((short) 0);
+
+      final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
+      assertThrows(
+          BadCiphertextException.class,
+          "Invalid algorithm identifier in ciphertext",
+          () ->
+              reconstructedHeaders.deserialize(
+                  headerBuff.array(), 0, CiphertextHeaders.NO_MAX_ENCRYPTED_DATA_KEYS));
     }
+  }
 
-    @Test
-    public void checkKeyBlobCount() {
-        final Map<String, String> encryptionContext = new HashMap<String, String>(1);
-        encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
+  @Test
+  public void invalidContentType() {
+    final Map<String, String> encryptionContext = new HashMap<String, String>(1);
+    encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
 
-        final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext);
-        final byte[] headerBytes = ciphertextHeaders.toByteArray();
+    for (CryptoAlgorithm alg : testAlgs) {
+      final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext, alg);
+      final byte[] headerBytes = ciphertextHeaders.toByteArray();
+      final ByteBuffer headerBuff = ByteBuffer.wrap(headerBytes);
 
-        final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
-        reconstructedHeaders.deserialize(headerBytes, 0);
+      readToContentType(headerBuff, alg);
 
-        assertEquals(1, reconstructedHeaders.getEncryptedKeyBlobCount());
+      // set content type to an invalid value
+      headerBuff.put((byte) 10);
+
+      final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
+      assertThrows(
+          BadCiphertextException.class,
+          "Invalid content type in ciphertext.",
+          () ->
+              reconstructedHeaders.deserialize(
+                  headerBuff.array(), 0, CiphertextHeaders.NO_MAX_ENCRYPTED_DATA_KEYS));
     }
+  }
 
-    @Test
-    public void checkNullMessageId() {
-        final CiphertextHeaders ciphertextHeaders = new CiphertextHeaders();
+  @Test
+  public void invalidReservedFieldLen() {
+    // Only applicable for V1 algorithms
+    final Map<String, String> encryptionContext = new HashMap<String, String>(1);
+    encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
+    final CryptoAlgorithm cryptoAlgorithm = CryptoAlgorithm.ALG_AES_256_GCM_IV12_TAG16_HKDF_SHA256;
 
-        assertEquals(null, ciphertextHeaders.getMessageId());
+    final CiphertextHeaders ciphertextHeaders =
+        createCiphertextHeaders(encryptionContext, cryptoAlgorithm);
+    final byte[] headerBytes = ciphertextHeaders.toByteArray();
+    final ByteBuffer headerBuff = ByteBuffer.wrap(headerBytes);
+
+    readToReservedField(headerBuff, cryptoAlgorithm);
+
+    // set reserved field to an invalid value
+    headerBuff.putInt(-1);
+
+    final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
+    assertThrows(
+        BadCiphertextException.class,
+        "Invalid value for reserved field in ciphertext",
+        () ->
+            reconstructedHeaders.deserialize(
+                headerBuff.array(), 0, CiphertextHeaders.NO_MAX_ENCRYPTED_DATA_KEYS));
+  }
+
+  @Test
+  public void invalidNonceLen() {
+    // Only applicable for V1 algorithms
+    final Map<String, String> encryptionContext = new HashMap<String, String>(1);
+    encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
+    final CryptoAlgorithm cryptoAlgorithm = CryptoAlgorithm.ALG_AES_256_GCM_IV12_TAG16_HKDF_SHA256;
+
+    final CiphertextHeaders ciphertextHeaders =
+        createCiphertextHeaders(encryptionContext, cryptoAlgorithm);
+    final byte[] headerBytes = ciphertextHeaders.toByteArray();
+    final ByteBuffer headerBuff = ByteBuffer.wrap(headerBytes);
+
+    readToNonceLen(headerBuff, cryptoAlgorithm);
+
+    // set nonce len to an invalid value
+    headerBuff.put((byte) -1);
+
+    final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
+    assertThrows(
+        BadCiphertextException.class,
+        "Invalid nonce length in ciphertext",
+        () ->
+            reconstructedHeaders.deserialize(
+                headerBuff.array(), 0, CiphertextHeaders.NO_MAX_ENCRYPTED_DATA_KEYS));
+  }
+
+  @Test
+  public void invalidFrameLength() {
+    final Map<String, String> encryptionContext = new HashMap<String, String>(1);
+    encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
+
+    for (CryptoAlgorithm alg : testAlgs) {
+      final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext, alg);
+      final byte[] headerBytes = ciphertextHeaders.toByteArray();
+      final ByteBuffer headerBuff = ByteBuffer.wrap(headerBytes);
+
+      readToFrameLen(headerBuff, alg);
+
+      // set frame len to an invalid value
+      headerBuff.putInt(-1);
+
+      final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
+      assertThrows(
+          BadCiphertextException.class,
+          "Invalid frame length in ciphertext",
+          () ->
+              reconstructedHeaders.deserialize(
+                  headerBuff.array(), 0, CiphertextHeaders.NO_MAX_ENCRYPTED_DATA_KEYS));
     }
-
-    @Test
-    public void checkNullHeaderNonce() {
-        final CiphertextHeaders ciphertextHeaders = new CiphertextHeaders();
-
-        assertEquals(null, ciphertextHeaders.getHeaderNonce());
-    }
-
-    @Test
-    public void checkNullHeaderTag() {
-        final CiphertextHeaders ciphertextHeaders = new CiphertextHeaders();
-
-        assertEquals(null, ciphertextHeaders.getHeaderTag());
-    }
-
-    private void readUptoVersion(final ByteBuffer headerBuff) {
-        headerBuff.get();
-    }
-
-    private void readUptoType(final ByteBuffer headerBuff) {
-        readUptoVersion(headerBuff);
-
-        headerBuff.get();
-    }
-
-    private void readUptoAlgoId(final ByteBuffer headerBuff) {
-        readUptoType(headerBuff);
-
-        headerBuff.getShort();
-    }
-
-    private void readUptoEncContext(final ByteBuffer headerBuff) {
-        readUptoAlgoId(headerBuff);
-
-        // pull out messageId to get to enc context len.
-        final byte[] msgId = new byte[Constants.MESSAGE_ID_LEN];
-        headerBuff.get(msgId);
-
-        // pull out enc context to get to key count.
-        final int encContextLen = headerBuff.getShort();
-        final byte[] encContext = new byte[encContextLen];
-        headerBuff.get(encContext);
-    }
-
-    private void readUptoKeyBlob(final ByteBuffer headerBuff) {
-        readUptoEncContext(headerBuff);
-
-        headerBuff.getShort(); // get key count
-        final short keyProviderIdLen = headerBuff.getShort();
-        final byte[] keyProviderId = new byte[keyProviderIdLen];
-        headerBuff.get(keyProviderId);
-        final short keyProviderInfoLen = headerBuff.getShort();
-        final byte[] keyProviderInfo = new byte[keyProviderInfoLen];
-        headerBuff.get(keyProviderInfo);
-        final short keyLen = headerBuff.getShort();
-        final byte[] key = new byte[keyLen];
-        headerBuff.get(key);
-    }
-
-    private void readUptoContentType(final ByteBuffer headerBuff) {
-        readUptoKeyBlob(headerBuff);
-        headerBuff.get();
-    }
-
-    private void readUptoReservedField(final ByteBuffer headerBuff) {
-        readUptoContentType(headerBuff);
-        headerBuff.getInt();
-    }
-
-    private void readUptoNonceLen(final ByteBuffer headerBuff) {
-        readUptoReservedField(headerBuff);
-        headerBuff.get();
-    }
-
-    @Test(expected = BadCiphertextException.class)
-    public void invalidVersion(){
-        final Map<String, String> encryptionContext = new HashMap<String, String>(1);
-        encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
-
-        final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext);
-        final byte[] headerBytes = ciphertextHeaders.toByteArray();
-        final ByteBuffer headerBuff = ByteBuffer.wrap(headerBytes);
-
-        //set version to invalid type of 0.
-        headerBuff.put((byte) 0);
-
-        final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
-        reconstructedHeaders.deserialize(headerBuff.array(), 0);
-    }
-
-    @Test(expected = BadCiphertextException.class)
-    public void invalidType() {
-        final Map<String, String> encryptionContext = new HashMap<String, String>(1);
-        encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
-
-        final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext);
-        final byte[] headerBytes = ciphertextHeaders.toByteArray();
-        final ByteBuffer headerBuff = ByteBuffer.wrap(headerBytes);
-
-        readUptoVersion(headerBuff);
-
-        // set type to invalid value of 0.
-        headerBuff.put((byte) 0);
-
-        final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
-        reconstructedHeaders.deserialize(headerBuff.array(), 0);
-    }
-
-    @Test(expected = BadCiphertextException.class)
-    public void invalidAlgoId() {
-        final Map<String, String> encryptionContext = new HashMap<String, String>(1);
-        encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
-
-        final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext);
-        final byte[] headerBytes = ciphertextHeaders.toByteArray();
-        final ByteBuffer headerBuff = ByteBuffer.wrap(headerBytes);
-
-        readUptoType(headerBuff);
-
-        // set algoId to invalid value of 0.
-        headerBuff.putShort((short) 0);
-
-        final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
-        reconstructedHeaders.deserialize(headerBuff.array(), 0);
-    }
-
-    @Test(expected = BadCiphertextException.class)
-    public void invalidContentType() {
-        final Map<String, String> encryptionContext = new HashMap<String, String>(1);
-        encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
-
-        final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext);
-        final byte[] headerBytes = ciphertextHeaders.toByteArray();
-        final ByteBuffer headerBuff = ByteBuffer.wrap(headerBytes);
-
-        readUptoKeyBlob(headerBuff);
-
-        // set content type to an invalid value
-        headerBuff.put((byte) 10);
-
-        final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
-        reconstructedHeaders.deserialize(headerBuff.array(), 0);
-    }
-
-    @Test(expected = BadCiphertextException.class)
-    public void invalidReservedFieldLen() {
-        final Map<String, String> encryptionContext = new HashMap<String, String>(1);
-        encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
-
-        final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext);
-        final byte[] headerBytes = ciphertextHeaders.toByteArray();
-        final ByteBuffer headerBuff = ByteBuffer.wrap(headerBytes);
-
-        readUptoContentType(headerBuff);
-
-        // set reserved field to an invalid value
-        headerBuff.putInt(-1);
-
-        final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
-        reconstructedHeaders.deserialize(headerBuff.array(), 0);
-    }
-
-    @Test(expected = BadCiphertextException.class)
-    public void invalidNonceLen() {
-        final Map<String, String> encryptionContext = new HashMap<String, String>(1);
-        encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
-
-        final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext);
-        final byte[] headerBytes = ciphertextHeaders.toByteArray();
-        final ByteBuffer headerBuff = ByteBuffer.wrap(headerBytes);
-
-        readUptoReservedField(headerBuff);
-
-        // set nonce len to an invalid value
-        headerBuff.put((byte) -1);
-
-        final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
-        reconstructedHeaders.deserialize(headerBuff.array(), 0);
-    }
-
-    @Test(expected = BadCiphertextException.class)
-    public void invalidFrameLength() {
-        final Map<String, String> encryptionContext = new HashMap<String, String>(1);
-        encryptionContext.put("ENC", "CiphertextHeader Streaming Test");
-
-        final CiphertextHeaders ciphertextHeaders = createCiphertextHeaders(encryptionContext);
-        final byte[] headerBytes = ciphertextHeaders.toByteArray();
-        final ByteBuffer headerBuff = ByteBuffer.wrap(headerBytes);
-
-        readUptoNonceLen(headerBuff);
-
-        // set content type to an invalid value
-        headerBuff.putInt(-1);
-
-        final CiphertextHeaders reconstructedHeaders = new CiphertextHeaders();
-        reconstructedHeaders.deserialize(headerBuff.array(), 0);
-    }
+  }
 }
